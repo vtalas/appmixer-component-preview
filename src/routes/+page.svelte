@@ -7,6 +7,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import ComponentPreview from '$lib/components/ComponentPreview.svelte';
 	import type { ConnectorComponent, ConnectorTree } from '$lib/types/component';
+	import { browser } from '$app/environment';
 
 	let { data } = $props();
 
@@ -14,6 +15,79 @@
 	let selectedComponent = $state<ConnectorComponent | null>(null);
 	let expandedConnectors = $state<Set<string>>(new Set());
 	let expandedModules = $state<Set<string>>(new Set());
+
+	// Helper to find a component by its path
+	function findComponentByPath(path: string): ConnectorComponent | null {
+		for (const connector of data.tree.connectors) {
+			for (const module of connector.modules) {
+				for (const component of module.components) {
+					if (component.path === path) {
+						return component;
+					}
+				}
+			}
+		}
+		return null;
+	}
+
+	// Helper to expand the tree to show a component
+	function expandTreeForComponent(component: ConnectorComponent) {
+		const [connectorName, moduleName] = component.path.split('/');
+		expandedConnectors = new Set([...expandedConnectors, connectorName]);
+		expandedModules = new Set([...expandedModules, `${connectorName}/${moduleName}`]);
+	}
+
+	// Read initial state from URL hash on mount
+	function initFromUrl() {
+		if (!browser) return;
+		const hash = window.location.hash.slice(1); // Remove the '#'
+		if (hash) {
+			const path = decodeURIComponent(hash);
+			const component = findComponentByPath(path);
+			if (component) {
+				selectedComponent = component;
+				expandTreeForComponent(component);
+			}
+		}
+	}
+
+	// Update URL when selection changes
+	function updateUrl(component: ConnectorComponent | null) {
+		if (!browser) return;
+		if (component) {
+			const newHash = `#${encodeURIComponent(component.path)}`;
+			if (window.location.hash !== newHash) {
+				window.history.pushState(null, '', newHash);
+			}
+		} else {
+			if (window.location.hash) {
+				window.history.pushState(null, '', window.location.pathname);
+			}
+		}
+	}
+
+	// Initialize from URL on mount
+	$effect(() => {
+		initFromUrl();
+
+		// Listen for browser back/forward navigation
+		const handlePopState = () => {
+			const hash = window.location.hash.slice(1);
+			if (hash) {
+				const path = decodeURIComponent(hash);
+				const component = findComponentByPath(path);
+				if (component) {
+					selectedComponent = component;
+					expandTreeForComponent(component);
+				}
+			} else {
+				selectedComponent = null;
+			}
+		};
+
+		window.addEventListener('popstate', handlePopState);
+		return () => window.removeEventListener('popstate', handlePopState);
+	});
 
 	let filteredTree = $derived.by(() => {
 		if (!searchQuery.trim()) {
@@ -81,10 +155,12 @@
 
 	function selectComponent(component: ConnectorComponent) {
 		selectedComponent = component;
+		updateUrl(component);
 	}
 
 	function closeEditor() {
 		selectedComponent = null;
+		updateUrl(null);
 	}
 
 	// Expand all when searching
