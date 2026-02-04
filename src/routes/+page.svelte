@@ -3,22 +3,25 @@
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
 	import * as Collapsible from '$lib/components/ui/collapsible';
 	import { Badge } from '$lib/components/ui/badge';
-	import { ChevronRight, Search, Package, Folder, Box, X } from 'lucide-svelte';
+	import { ChevronRight, Search, Package, Folder, Box, X, Save, AlertCircle, FolderSync, Circle, RotateCw, Loader2 } from 'lucide-svelte';
 	import { Button } from '$lib/components/ui/button';
 	import ComponentPreview from '$lib/components/ComponentPreview.svelte';
 	import type { ConnectorComponent, ConnectorTree } from '$lib/types/component';
 	import { browser } from '$app/environment';
-
-	let { data } = $props();
+	import { onMount } from 'svelte';
+	import { fileSync } from '$lib/stores/fileSync.svelte';
 
 	let searchQuery = $state('');
 	let selectedComponent = $state<ConnectorComponent | null>(null);
 	let expandedConnectors = $state<Set<string>>(new Set());
 	let expandedModules = $state<Set<string>>(new Set());
 
+	// Use the file sync store's tree instead of static data
+	let currentTree = $derived(fileSync.tree);
+
 	// Helper to find a component by its path
 	function findComponentByPath(path: string): ConnectorComponent | null {
-		for (const connector of data.tree.connectors) {
+		for (const connector of currentTree.connectors) {
 			for (const module of connector.modules) {
 				for (const component of module.components) {
 					if (component.path === path) {
@@ -29,6 +32,13 @@
 		}
 		return null;
 	}
+
+	// Get connector for the selected component (reactive)
+	let selectedConnector = $derived.by(() => {
+		if (!selectedComponent) return null;
+		const connectorName = selectedComponent.path.split('/')[0];
+		return currentTree.connectors.find(c => c.name === connectorName) || null;
+	});
 
 	// Helper to expand the tree to show a component
 	function expandTreeForComponent(component: ConnectorComponent) {
@@ -67,7 +77,7 @@
 	}
 
 	// Initialize from URL on mount
-	$effect(() => {
+	onMount(() => {
 		initFromUrl();
 
 		// Listen for browser back/forward navigation
@@ -91,13 +101,13 @@
 
 	let filteredTree = $derived.by(() => {
 		if (!searchQuery.trim()) {
-			return data.tree;
+			return currentTree;
 		}
 
 		const query = searchQuery.toLowerCase();
 		const filtered: ConnectorTree = { connectors: [] };
 
-		for (const connector of data.tree.connectors) {
+		for (const connector of currentTree.connectors) {
 			const filteredModules = [];
 
 			for (const module of connector.modules) {
@@ -153,7 +163,11 @@
 		expandedModules = newSet;
 	}
 
-	function selectComponent(component: ConnectorComponent) {
+	async function selectComponent(component: ConnectorComponent) {
+		// If connected, load fresh data from disk
+		if (fileSync.isConnected) {
+			await fileSync.loadComponentFromDirectory(component.path);
+		}
 		selectedComponent = component;
 		updateUrl(component);
 	}
@@ -178,6 +192,239 @@
 			expandedModules = moduleKeys;
 		}
 	});
+
+	// Keyboard shortcuts
+	function handleKeydown(event: KeyboardEvent) {
+		const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+		const modifier = isMac ? event.metaKey : event.ctrlKey;
+
+		if (modifier && event.key === 's') {
+			event.preventDefault();
+			if (fileSync.isConnected) {
+				fileSync.saveAllModifiedComponents();
+			}
+		}
+
+		if (modifier && event.key === 'o') {
+			event.preventDefault();
+			fileSync.openConnectorsFolder();
+		}
+	}
+
+	// Save current component
+	async function saveCurrentComponent() {
+		if (selectedComponent && fileSync.isConnected) {
+			await fileSync.saveComponentToDirectory(selectedComponent);
+		}
+	}
+
+	// Reload current component from disk
+	async function reloadCurrentComponent() {
+		if (selectedComponent && fileSync.isConnected) {
+			await fileSync.loadComponentFromDirectory(selectedComponent.path);
+			// Force reactivity by reassigning
+			selectedComponent = selectedComponent;
+		}
+	}
+
+	$effect(() => {
+		if (!browser) return;
+		window.addEventListener('keydown', handleKeydown);
+		return () => window.removeEventListener('keydown', handleKeydown);
+	});
+
+	// Handle inspector input changes (label, tooltip edits)
+	function handleInspectorInputChange(portName: string, inputKey: string, field: string, value: string) {
+		if (!selectedComponent) return;
+
+		const componentJson = selectedComponent.componentJson;
+
+		// Find the inspector to update
+		let inspector;
+		if (portName === 'properties') {
+			inspector = componentJson.properties?.inspector;
+		} else {
+			const port = componentJson.inPorts?.find(p => p.name === portName);
+			inspector = port?.inspector;
+		}
+
+		if (inspector?.inputs && inspector.inputs[inputKey]) {
+			// Handle special fields that need transformation
+			let processedValue: unknown = value;
+
+			if (field === 'levels') {
+				// Convert comma-separated string to array
+				processedValue = value.split(',').map(s => s.trim()).filter(s => s.length > 0);
+			}
+
+			// Update the field
+			(inspector.inputs[inputKey] as Record<string, unknown>)[field] = processedValue;
+
+			// Mark component as dirty
+			fileSync.markComponentDirty(selectedComponent.path);
+
+			// Force reactivity
+			selectedComponent = selectedComponent;
+		}
+	}
+
+	// Handle required checkbox changes
+	function handleRequiredChange(portName: string, inputKey: string, required: boolean) {
+		if (!selectedComponent) return;
+
+		const componentJson = selectedComponent.componentJson;
+
+		// Find the schema to update
+		let schema;
+		if (portName === 'properties') {
+			schema = componentJson.properties?.schema;
+		} else {
+			const port = componentJson.inPorts?.find(p => p.name === portName);
+			schema = port?.schema;
+		}
+
+		if (schema) {
+			// Initialize required array if it doesn't exist
+			if (!schema.required) {
+				schema.required = [];
+			}
+
+			const requiredArray = schema.required as string[];
+			const index = requiredArray.indexOf(inputKey);
+
+			if (required && index === -1) {
+				// Add to required array
+				requiredArray.push(inputKey);
+			} else if (!required && index !== -1) {
+				// Remove from required array
+				requiredArray.splice(index, 1);
+			}
+
+			// Mark component as dirty
+			fileSync.markComponentDirty(selectedComponent.path);
+
+			// Force reactivity
+			selectedComponent = selectedComponent;
+		}
+	}
+
+	// Handle input type changes
+	function handleTypeChange(portName: string, inputKey: string, newType: string) {
+		if (!selectedComponent) return;
+
+		const componentJson = selectedComponent.componentJson;
+
+		// Find the inspector to update
+		let inspector;
+		if (portName === 'properties') {
+			inspector = componentJson.properties?.inspector;
+		} else {
+			const port = componentJson.inPorts?.find(p => p.name === portName);
+			inspector = port?.inspector;
+		}
+
+		if (inspector?.inputs && inspector.inputs[inputKey]) {
+			// Update the type
+			(inspector.inputs[inputKey] as Record<string, unknown>).type = newType;
+
+			// Mark component as dirty
+			fileSync.markComponentDirty(selectedComponent.path);
+
+			// Force reactivity
+			selectedComponent = selectedComponent;
+		}
+	}
+
+	// Handle options changes for select/multiselect
+	function handleOptionsChange(portName: string, inputKey: string, options: unknown[]) {
+		if (!selectedComponent) return;
+
+		const componentJson = selectedComponent.componentJson;
+
+		// Find the inspector to update
+		let inspector;
+		if (portName === 'properties') {
+			inspector = componentJson.properties?.inspector;
+		} else {
+			const port = componentJson.inPorts?.find(p => p.name === portName);
+			inspector = port?.inspector;
+		}
+
+		if (inspector?.inputs && inspector.inputs[inputKey]) {
+			// Update the options
+			(inspector.inputs[inputKey] as Record<string, unknown>).options = options;
+
+			// Mark component as dirty
+			fileSync.markComponentDirty(selectedComponent.path);
+
+			// Force reactivity
+			selectedComponent = selectedComponent;
+		}
+	}
+
+	// Handle fields changes for expression type
+	function handleFieldsChange(portName: string, inputKey: string, fields: unknown) {
+		if (!selectedComponent) return;
+
+		const componentJson = selectedComponent.componentJson;
+
+		// Find the inspector to update
+		let inspector;
+		if (portName === 'properties') {
+			inspector = componentJson.properties?.inspector;
+		} else {
+			const port = componentJson.inPorts?.find(p => p.name === portName);
+			inspector = port?.inspector;
+		}
+
+		if (inspector?.inputs && inspector.inputs[inputKey]) {
+			// Update the fields
+			(inspector.inputs[inputKey] as Record<string, unknown>).fields = fields;
+
+			// Mark component as dirty
+			fileSync.markComponentDirty(selectedComponent.path);
+
+			// Force reactivity
+			selectedComponent = selectedComponent;
+		}
+	}
+
+	// Handle source changes for dynamic options
+	function handleSourceChange(portName: string, inputKey: string, source: { url: string; data?: unknown } | null) {
+		if (!selectedComponent) return;
+
+		const componentJson = selectedComponent.componentJson;
+
+		// Find the inspector to update
+		let inspector;
+		if (portName === 'properties') {
+			inspector = componentJson.properties?.inspector;
+		} else {
+			const port = componentJson.inPorts?.find(p => p.name === portName);
+			inspector = port?.inspector;
+		}
+
+		if (inspector?.inputs && inspector.inputs[inputKey]) {
+			const input = inspector.inputs[inputKey] as Record<string, unknown>;
+			if (source) {
+				// Add or update source
+				input.source = source;
+				// Remove static options when switching to dynamic
+				delete input.options;
+			} else {
+				// Remove source (switch to static options)
+				delete input.source;
+				// Initialize empty options array
+				input.options = [];
+			}
+
+			// Mark component as dirty
+			fileSync.markComponentDirty(selectedComponent.path);
+
+			// Force reactivity
+			selectedComponent = selectedComponent;
+		}
+	}
 </script>
 
 <svelte:head>
@@ -185,6 +432,53 @@
 </svelte:head>
 
 <div class="app-layout">
+	<!-- File Sync Toolbar -->
+	{#if browser && fileSync.isSupported}
+		<div class="file-toolbar">
+			<div class="file-toolbar-left">
+				<Button variant="outline" size="sm" onclick={() => fileSync.openConnectorsFolder()}>
+					<FolderSync class="h-4 w-4 mr-2" />
+					{fileSync.isConnected ? 'Change Folder' : 'Open Connectors'}
+				</Button>
+				{#if fileSync.isConnected}
+					<Button
+						variant="outline"
+						size="sm"
+						onclick={() => fileSync.saveAllModifiedComponents()}
+						disabled={!fileSync.state.hasUnsavedChanges || fileSync.state.isSaving}
+					>
+						<Save class="h-4 w-4 mr-2" />
+						Save All ({fileSync.state.modifiedComponents.size})
+					</Button>
+				{/if}
+			</div>
+			<div class="file-toolbar-right">
+				{#if fileSync.state.directoryName}
+					<span class="file-name">
+						<FolderSync class="h-3 w-3 inline mr-1" />
+						{fileSync.state.directoryName}/
+					</span>
+					{#if fileSync.state.hasUnsavedChanges}
+						<Badge variant="secondary" class="unsaved-badge">
+							{fileSync.state.modifiedComponents.size} modified
+						</Badge>
+					{/if}
+				{:else}
+					<span class="file-name muted">Not connected</span>
+				{/if}
+				{#if fileSync.state.lastSavedAt}
+					<span class="last-saved">Saved {fileSync.state.lastSavedAt.toLocaleTimeString()}</span>
+				{/if}
+				{#if fileSync.state.error}
+					<span class="file-error">
+						<AlertCircle class="h-4 w-4" />
+						{fileSync.state.error}
+					</span>
+				{/if}
+			</div>
+		</div>
+	{/if}
+
 	<!-- Sidebar -->
 	<div class="sidebar">
 		<div class="sidebar-header">
@@ -200,6 +494,18 @@
 		</div>
 
 		<ScrollArea class="sidebar-content">
+			{#if fileSync.state.isLoading}
+				<div class="sidebar-loading">
+					<Loader2 class="loading-spinner" />
+					<span>Loading connectors...</span>
+				</div>
+			{:else if !fileSync.isConnected}
+				<div class="sidebar-empty">
+					<FolderSync class="empty-folder-icon" />
+					<p>No folder connected</p>
+					<p class="sidebar-empty-hint">Click "Open Connectors" to select the appmixer connectors folder</p>
+				</div>
+			{:else}
 			<div class="tree-container">
 				{#each filteredTree.connectors as connector}
 					<Collapsible.Root
@@ -210,8 +516,16 @@
 							<ChevronRight
 								class="tree-chevron {expandedConnectors.has(connector.name) ? 'expanded' : ''}"
 							/>
-							<Package class="tree-icon" />
-							<span class="tree-label">{connector.name}</span>
+							{#if connector.icon}
+								<img
+									src={connector.icon}
+									alt=""
+									class="connector-icon"
+								/>
+							{:else}
+								<Package class="tree-icon" />
+							{/if}
+							<span class="tree-label">{connector.label || connector.name}</span>
 							<Badge variant="secondary" class="tree-badge">
 								{connector.modules.reduce((acc, m) => acc + m.components.length, 0)}
 							</Badge>
@@ -238,12 +552,21 @@
 											<div class="tree-children">
 												{#each module.components as component}
 													<button
-														class="tree-item component-item {selectedComponent?.path === component.path ? 'selected' : ''}"
+														class="tree-item component-item {selectedComponent?.path === component.path ? 'selected' : ''} {fileSync.isComponentModified(component.path) ? 'modified' : ''}"
 														onclick={() => selectComponent(component)}
 													>
+														{#if fileSync.isComponentModified(component.path)}
+															<Circle class="modified-indicator" />
+														{/if}
 														{#if component.componentJson.icon}
 															<img
-																src="data:image/svg+xml;base64,{component.componentJson.icon}"
+																src={component.componentJson.icon}
+																alt=""
+																class="component-icon"
+															/>
+														{:else if connector.icon}
+															<img
+																src={connector.icon}
 																alt=""
 																class="component-icon"
 															/>
@@ -265,6 +588,7 @@
 					</Collapsible.Root>
 				{/each}
 			</div>
+			{/if}
 		</ScrollArea>
 	</div>
 
@@ -278,19 +602,57 @@
 					<div class="editor-title-section">
 						{#if comp.icon}
 							<img
-								src="data:image/svg+xml;base64,{comp.icon}"
+								src={comp.icon}
 								alt=""
 								class="editor-icon"
 							/>
+						{:else if selectedConnector?.icon}
+							<img
+								src={selectedConnector.icon}
+								alt=""
+								class="editor-icon"
+							/>
+						{:else}
+							<div class="editor-icon-placeholder">
+								<Package class="editor-icon-fallback" />
+							</div>
 						{/if}
 						<div class="editor-title-text">
-							<h2 class="editor-title">{comp.label || selectedComponent.name}</h2>
+							<h2 class="editor-title">
+								{comp.label || selectedComponent.name}
+								{#if fileSync.isComponentModified(selectedComponent.path)}
+									<span class="modified-dot"></span>
+								{/if}
+							</h2>
 							<p class="editor-subtitle">{comp.name}</p>
 						</div>
 					</div>
-					<Button variant="ghost" size="sm" onclick={closeEditor} class="close-button">
-						<X class="h-4 w-4" />
-					</Button>
+					<div class="editor-header-actions">
+						{#if fileSync.isConnected}
+							<Button
+								variant="ghost"
+								size="sm"
+								onclick={reloadCurrentComponent}
+								title="Reload from disk"
+							>
+								<RotateCw class="h-4 w-4" />
+							</Button>
+						{/if}
+						{#if fileSync.isConnected && fileSync.isComponentModified(selectedComponent.path)}
+							<Button
+								variant="outline"
+								size="sm"
+								onclick={saveCurrentComponent}
+								disabled={fileSync.state.isSaving}
+							>
+								<Save class="h-4 w-4 mr-2" />
+								Save Component
+							</Button>
+						{/if}
+						<Button variant="ghost" size="sm" onclick={closeEditor} class="close-button">
+							<X class="h-4 w-4" />
+						</Button>
+					</div>
 				</div>
 
 				<!-- Component Info -->
@@ -317,7 +679,15 @@
 
 				<!-- Component Preview/Editor -->
 				<div class="editor-body">
-					<ComponentPreview componentJson={comp} />
+					<ComponentPreview
+						componentJson={comp}
+						onInspectorInputChange={handleInspectorInputChange}
+						onRequiredChange={handleRequiredChange}
+						onTypeChange={handleTypeChange}
+						onOptionsChange={handleOptionsChange}
+						onFieldsChange={handleFieldsChange}
+						onSourceChange={handleSourceChange}
+					/>
 				</div>
 			</div>
 		{:else}
@@ -333,13 +703,67 @@
 <style>
 	.app-layout {
 		display: flex;
+		flex-wrap: wrap;
 		height: 100vh;
 		background: var(--color-background);
+	}
+
+	/* File Toolbar */
+	.file-toolbar {
+		width: 100%;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 8px 16px;
+		background: var(--color-card);
+		border-bottom: 1px solid var(--color-border);
+		gap: 16px;
+	}
+
+	.file-toolbar-left {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.file-toolbar-right {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		font-size: 13px;
+	}
+
+	.file-name {
+		font-weight: 500;
+		font-family: monospace;
+	}
+
+	.file-name.muted {
+		color: var(--color-muted-foreground);
+		font-weight: 400;
+	}
+
+	:global(.unsaved-badge) {
+		font-size: 10px;
+	}
+
+	.last-saved {
+		color: var(--color-muted-foreground);
+		font-size: 12px;
+	}
+
+	.file-error {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		color: hsl(var(--color-destructive));
+		font-size: 12px;
 	}
 
 	/* Sidebar */
 	.sidebar {
 		width: 320px;
+		height: calc(100vh - 49px); /* Account for toolbar height */
 		border-right: 1px solid var(--color-border);
 		display: flex;
 		flex-direction: column;
@@ -431,6 +855,13 @@
 		flex-shrink: 0;
 	}
 
+	.connector-icon {
+		width: 16px;
+		height: 16px;
+		flex-shrink: 0;
+		border-radius: 2px;
+	}
+
 	.tree-label {
 		flex: 1;
 		overflow: hidden;
@@ -449,6 +880,17 @@
 		height: 16px;
 	}
 
+	:global(.modified-indicator) {
+		width: 8px;
+		height: 8px;
+		fill: hsl(var(--color-primary));
+		flex-shrink: 0;
+	}
+
+	:global(.tree-item.modified) {
+		font-weight: 500;
+	}
+
 	.tree-children {
 		margin-left: 20px;
 	}
@@ -456,6 +898,7 @@
 	/* Main Content */
 	.main-content {
 		flex: 1;
+		height: calc(100vh - 49px); /* Account for toolbar height */
 		display: flex;
 		flex-direction: column;
 		overflow: hidden;
@@ -486,6 +929,25 @@
 	.editor-icon {
 		width: 40px;
 		height: 40px;
+		flex-shrink: 0;
+		border-radius: 4px;
+	}
+
+	.editor-icon-placeholder {
+		width: 40px;
+		height: 40px;
+		flex-shrink: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background: var(--color-muted);
+		border-radius: 4px;
+	}
+
+	:global(.editor-icon-fallback) {
+		width: 24px;
+		height: 24px;
+		color: var(--color-muted-foreground);
 	}
 
 	.editor-title-text {
@@ -497,6 +959,22 @@
 		font-size: 18px;
 		font-weight: 600;
 		line-height: 1.2;
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.modified-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: hsl(var(--color-primary));
+	}
+
+	.editor-header-actions {
+		display: flex;
+		align-items: center;
+		gap: 8px;
 	}
 
 	.editor-subtitle {
@@ -562,5 +1040,61 @@
 		font-size: 14px;
 		text-align: center;
 		max-width: 300px;
+	}
+
+	/* Sidebar Loading State */
+	.sidebar-loading {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		padding: 40px 20px;
+		color: var(--color-muted-foreground);
+		gap: 12px;
+	}
+
+	:global(.loading-spinner) {
+		width: 24px;
+		height: 24px;
+		animation: spin 1s linear infinite;
+	}
+
+	@keyframes spin {
+		from {
+			transform: rotate(0deg);
+		}
+		to {
+			transform: rotate(360deg);
+		}
+	}
+
+	/* Sidebar Empty State */
+	.sidebar-empty {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		padding: 40px 20px;
+		color: var(--color-muted-foreground);
+		text-align: center;
+	}
+
+	:global(.empty-folder-icon) {
+		width: 48px;
+		height: 48px;
+		opacity: 0.4;
+		margin-bottom: 12px;
+	}
+
+	.sidebar-empty p {
+		margin: 0;
+		font-size: 14px;
+	}
+
+	.sidebar-empty-hint {
+		font-size: 12px !important;
+		margin-top: 8px !important;
+		opacity: 0.7;
+		max-width: 200px;
 	}
 </style>

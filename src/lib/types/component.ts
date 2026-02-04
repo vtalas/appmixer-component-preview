@@ -115,6 +115,8 @@ export interface ConnectorModule {
 
 export interface Connector {
 	name: string;
+	label?: string;
+	icon?: string;
 	modules: ConnectorModule[];
 }
 

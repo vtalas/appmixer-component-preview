@@ -8,9 +8,15 @@
 
 	interface Props {
 		componentJson: ComponentJson;
+		onInspectorInputChange?: (portName: string, inputKey: string, field: string, value: string) => void;
+		onRequiredChange?: (portName: string, inputKey: string, required: boolean) => void;
+		onTypeChange?: (portName: string, inputKey: string, newType: string) => void;
+		onOptionsChange?: (portName: string, inputKey: string, options: unknown[]) => void;
+		onFieldsChange?: (portName: string, inputKey: string, fields: unknown) => void;
+		onSourceChange?: (portName: string, inputKey: string, source: { url: string; data?: unknown } | null) => void;
 	}
 
-	let { componentJson }: Props = $props();
+	let { componentJson, onInspectorInputChange, onRequiredChange, onTypeChange, onOptionsChange, onFieldsChange, onSourceChange }: Props = $props();
 
 	let hasProperties = $derived(
 		componentJson.properties?.inspector || componentJson.properties?.schema
@@ -20,6 +26,60 @@
 
 	// Default tab
 	let defaultTab = $derived(hasInPorts ? 'inputs' : hasProperties ? 'properties' : 'outputs');
+
+	// Create handler for input changes
+	function createInputChangeHandler(portName: string) {
+		return (inputKey: string, field: string, value: string) => {
+			if (onInspectorInputChange) {
+				onInspectorInputChange(portName, inputKey, field, value);
+			}
+		};
+	}
+
+	// Create handler for required changes
+	function createRequiredChangeHandler(portName: string) {
+		return (inputKey: string, required: boolean) => {
+			if (onRequiredChange) {
+				onRequiredChange(portName, inputKey, required);
+			}
+		};
+	}
+
+	// Create handler for type changes
+	function createTypeChangeHandler(portName: string) {
+		return (inputKey: string, newType: string) => {
+			if (onTypeChange) {
+				onTypeChange(portName, inputKey, newType);
+			}
+		};
+	}
+
+	// Create handler for options changes
+	function createOptionsChangeHandler(portName: string) {
+		return (inputKey: string, options: unknown[]) => {
+			if (onOptionsChange) {
+				onOptionsChange(portName, inputKey, options);
+			}
+		};
+	}
+
+	// Create handler for fields changes (expression)
+	function createFieldsChangeHandler(portName: string) {
+		return (inputKey: string, fields: unknown) => {
+			if (onFieldsChange) {
+				onFieldsChange(portName, inputKey, fields);
+			}
+		};
+	}
+
+	// Create handler for source changes (dynamic options)
+	function createSourceChangeHandler(portName: string) {
+		return (inputKey: string, source: { url: string; data?: unknown } | null) => {
+			if (onSourceChange) {
+				onSourceChange(portName, inputKey, source);
+			}
+		};
+	}
 </script>
 
 <div class="component-editor">
@@ -51,6 +111,12 @@
 								inspector={port.inspector}
 								schema={port.schema}
 								portName={port.name}
+								onInputChange={createInputChangeHandler(port.name)}
+								onRequiredChange={createRequiredChangeHandler(port.name)}
+								onTypeChange={createTypeChangeHandler(port.name)}
+								onOptionsChange={createOptionsChangeHandler(port.name)}
+								onFieldsChange={createFieldsChangeHandler(port.name)}
+								onSourceChange={createSourceChangeHandler(port.name)}
 							/>
 						{:else if port.schema}
 							<div class="schema-section">
@@ -71,6 +137,12 @@
 						<InspectorEditor
 							inspector={componentJson.properties.inspector}
 							schema={componentJson.properties.schema}
+							onInputChange={createInputChangeHandler('properties')}
+							onRequiredChange={createRequiredChangeHandler('properties')}
+							onTypeChange={createTypeChangeHandler('properties')}
+							onOptionsChange={createOptionsChangeHandler('properties')}
+							onFieldsChange={createFieldsChangeHandler('properties')}
+							onSourceChange={createSourceChangeHandler('properties')}
 						/>
 					{:else if componentJson.properties?.schema}
 						<div class="schema-section">
