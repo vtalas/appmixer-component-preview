@@ -27,3 +27,7 @@ vite.config.ts.timestamp-*
 # src/lib/data/connectors.json
 /.idea/
 /.svelte-kit/
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/schemas/
