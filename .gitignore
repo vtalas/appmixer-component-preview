@@ -25,3 +25,5 @@ vite.config.ts.timestamp-*
 
 # Generated data (comment this line if you want to commit the data for Vercel)
 # src/lib/data/connectors.json
+/.idea/
+/.svelte-kit/

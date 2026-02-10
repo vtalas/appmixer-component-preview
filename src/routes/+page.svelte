@@ -3,18 +3,27 @@
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
 	import * as Collapsible from '$lib/components/ui/collapsible';
 	import { Badge } from '$lib/components/ui/badge';
-	import { ChevronRight, Search, Package, Folder, Box, X, Save, AlertCircle, FolderSync, Circle, RotateCw, Loader2 } from 'lucide-svelte';
+	import { ChevronRight, Search, Package, Folder, Box, X, Save, AlertCircle, FolderSync, Circle, RotateCw, Loader2, MessageSquare, FlaskConical } from 'lucide-svelte';
 	import { Button } from '$lib/components/ui/button';
 	import ComponentPreview from '$lib/components/ComponentPreview.svelte';
+	import AiChatPanel from '$lib/components/AiChatPanel.svelte';
+	import TestPlanViewer from '$lib/components/TestPlanViewer.svelte';
 	import type { ConnectorComponent, ConnectorTree } from '$lib/types/component';
 	import { browser } from '$app/environment';
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { fileSync } from '$lib/stores/fileSync.svelte';
 
 	let searchQuery = $state('');
 	let selectedComponent = $state<ConnectorComponent | null>(null);
 	let expandedConnectors = $state<Set<string>>(new Set());
 	let expandedModules = $state<Set<string>>(new Set());
+	let showAiPanel = $state(false);
+	type EditorTab = 'properties' | 'testplan';
+	let activeTab = $state<EditorTab>('properties');
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	let testPlanData = $state<any[] | null>(null);
+	let testPlanLoading = $state(false);
+	let testPlanConnector = $state<string | null>(null);
 
 	// Use the file sync store's tree instead of static data
 	let currentTree = $derived(fileSync.tree);
@@ -389,6 +398,97 @@
 		}
 	}
 
+	// Build context string for AI chat panel
+	let aiContext = $derived.by(() => {
+		if (!selectedComponent) return '';
+		const comp = selectedComponent.componentJson;
+		return `Currently editing component: ${comp.name || selectedComponent.name}\nPath: ${selectedComponent.path}\nLabel: ${comp.label || ''}\nDescription: ${comp.description || ''}\nCurrent JSON:\n${JSON.stringify(comp, null, 2)}`;
+	});
+
+	// Handle AI-generated component JSON
+	function handleComponentGenerated(componentJson: unknown) {
+		if (!selectedComponent || !componentJson || typeof componentJson !== 'object') return;
+
+		// Merge the generated JSON into the selected component
+		const current = selectedComponent.componentJson;
+		const generated = componentJson as Record<string, unknown>;
+
+		// Update all top-level keys from the generated JSON
+		for (const [key, value] of Object.entries(generated)) {
+			(current as unknown as Record<string, unknown>)[key] = value;
+		}
+
+		// Mark as dirty
+		fileSync.markComponentDirty(selectedComponent.path);
+
+		// Force reactivity
+		selectedComponent = selectedComponent;
+	}
+
+	// Test plan tab stats
+	let testPlanStats = $derived.by(() => {
+		if (!testPlanData) return { passed: 0, failed: 0, total: 0 };
+		return {
+			passed: testPlanData.filter((t: { status?: string }) => t.status === 'passed').length,
+			failed: testPlanData.filter((t: { status?: string }) => t.status === 'failed').length,
+			total: testPlanData.length
+		};
+	});
+
+	// ── Test Plan ────────────────────────────────────────────────────────
+	async function loadTestPlanForConnector(connectorName: string) {
+		if (testPlanConnector === connectorName && testPlanData !== null) return;
+		if (testPlanLoading) return;
+		testPlanLoading = true;
+		testPlanConnector = connectorName;
+		try {
+			const data = await fileSync.loadTestPlan(connectorName);
+			testPlanData = data && Array.isArray(data) ? data : null;
+		} catch {
+			testPlanData = null;
+		} finally {
+			testPlanLoading = false;
+		}
+	}
+
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	function handleTestPlanUpdated(updatedPlan: any[]) {
+		testPlanData = updatedPlan;
+		// Also persist to disk
+		if (testPlanConnector) {
+			fileSync.saveTestPlan(testPlanConnector, updatedPlan);
+		}
+	}
+
+	async function handleReloadTestPlan() {
+		if (testPlanConnector) {
+			// Force reload by resetting the guard
+			const connectorName = testPlanConnector;
+			testPlanConnector = null;
+			testPlanData = null;
+			await loadTestPlanForConnector(connectorName);
+		}
+	}
+
+	// Auto-load test plan when connector changes.
+	// Use $derived for the connector name so the effect only re-runs when
+	// the connector actually changes — not on every selectedComponent mutation.
+	let activeConnectorName = $derived(selectedConnector?.name ?? null);
+	let isConnected = $derived(fileSync.isConnected);
+	$effect(() => {
+		const name = activeConnectorName;
+		const connected = isConnected;
+		if (name && connected) {
+			// Fire-and-forget; loadTestPlanForConnector has its own guards
+			untrack(() => loadTestPlanForConnector(name));
+		} else {
+			untrack(() => {
+				testPlanData = null;
+				testPlanConnector = null;
+			});
+		}
+	});
+
 	// Handle source changes for dynamic options
 	function handleSourceChange(portName: string, inputKey: string, source: { url: string; data?: unknown } | null) {
 		if (!selectedComponent) return;
@@ -649,6 +749,14 @@
 								Save Component
 							</Button>
 						{/if}
+						<Button
+							variant={showAiPanel ? 'secondary' : 'ghost'}
+							size="sm"
+							onclick={() => showAiPanel = !showAiPanel}
+							title="Toggle AI Assistant"
+						>
+							<MessageSquare class="h-4 w-4" />
+						</Button>
 						<Button variant="ghost" size="sm" onclick={closeEditor} class="close-button">
 							<X class="h-4 w-4" />
 						</Button>
@@ -677,17 +785,66 @@
 					{/if}
 				</div>
 
-				<!-- Component Preview/Editor -->
-				<div class="editor-body">
-					<ComponentPreview
-						componentJson={comp}
-						onInspectorInputChange={handleInspectorInputChange}
-						onRequiredChange={handleRequiredChange}
-						onTypeChange={handleTypeChange}
-						onOptionsChange={handleOptionsChange}
-						onFieldsChange={handleFieldsChange}
-						onSourceChange={handleSourceChange}
-					/>
+				<!-- Tabs: Properties / Test Plan -->
+				{#if testPlanData}
+					<div class="editor-tabs">
+						<button
+							class="editor-tab {activeTab === 'properties' ? 'active' : ''}"
+							onclick={() => activeTab = 'properties'}
+						>
+							<Package class="h-3.5 w-3.5" />
+							Properties
+						</button>
+						<button
+							class="editor-tab {activeTab === 'testplan' ? 'active' : ''}"
+							onclick={() => activeTab = 'testplan'}
+						>
+							<FlaskConical class="h-3.5 w-3.5" />
+							Test Plan
+							{#if testPlanStats.passed > 0 || testPlanStats.failed > 0}
+								<span class="tab-stats">
+									{#if testPlanStats.passed > 0}<span class="tab-passed">{testPlanStats.passed}</span>{/if}
+									{#if testPlanStats.failed > 0}<span class="tab-failed">{testPlanStats.failed}</span>{/if}
+									/ {testPlanStats.total}
+								</span>
+							{/if}
+						</button>
+					</div>
+				{/if}
+
+				<!-- Tab Content + AI Side Panel -->
+				<div class="editor-body-wrapper">
+					<div class="editor-body">
+						{#if activeTab === 'properties' || !testPlanData}
+							<ComponentPreview
+								componentJson={comp}
+								onInspectorInputChange={handleInspectorInputChange}
+								onRequiredChange={handleRequiredChange}
+								onTypeChange={handleTypeChange}
+								onOptionsChange={handleOptionsChange}
+								onFieldsChange={handleFieldsChange}
+								onSourceChange={handleSourceChange}
+							/>
+						{:else if activeTab === 'testplan' && testPlanData && testPlanConnector}
+							<div class="test-plan-main">
+								<TestPlanViewer
+									testPlan={testPlanData}
+									connectorName={testPlanConnector}
+									connectorsDir={fileSync.directoryPath || ''}
+									onTestPlanUpdated={handleTestPlanUpdated}
+									onReloadTestPlan={handleReloadTestPlan}
+								/>
+							</div>
+						{/if}
+					</div>
+					{#if showAiPanel}
+						<div class="ai-panel">
+							<AiChatPanel
+								onComponentGenerated={handleComponentGenerated}
+								context={aiContext}
+							/>
+						</div>
+					{/if}
 				</div>
 			</div>
 		{:else}
@@ -1006,10 +1163,81 @@
 		display: none;
 	}
 
+	.editor-body-wrapper {
+		flex: 1;
+		display: flex;
+		overflow: hidden;
+	}
+
 	.editor-body {
 		flex: 1;
 		overflow: auto;
 		padding: 20px;
+	}
+
+	/* Editor Tabs */
+	.editor-tabs {
+		display: flex;
+		border-bottom: 1px solid var(--color-border);
+		background: var(--color-card);
+		flex-shrink: 0;
+	}
+
+	.editor-tab {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 8px 20px;
+		font-size: 13px;
+		font-weight: 500;
+		border: none;
+		background: transparent;
+		cursor: pointer;
+		color: var(--color-muted-foreground);
+		border-bottom: 2px solid transparent;
+		transition: all 0.15s ease;
+	}
+
+	.editor-tab:hover {
+		color: var(--color-foreground);
+		background: var(--color-muted);
+	}
+
+	.editor-tab.active {
+		color: var(--color-foreground);
+		border-bottom-color: var(--color-primary);
+	}
+
+	.tab-stats {
+		font-size: 11px;
+		font-weight: 400;
+		color: var(--color-muted-foreground);
+		margin-left: 2px;
+	}
+
+	.tab-passed {
+		color: #22c55e;
+		font-weight: 600;
+	}
+
+	.tab-failed {
+		color: #ef4444;
+		font-weight: 600;
+	}
+
+	.test-plan-main {
+		height: 100%;
+		display: flex;
+		flex-direction: column;
+	}
+
+	.ai-panel {
+		width: 420px;
+		border-left: 1px solid var(--color-border);
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+		background: var(--color-card);
 	}
 
 	/* Empty State */
