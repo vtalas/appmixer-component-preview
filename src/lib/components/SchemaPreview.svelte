@@ -1,15 +1,10 @@
-<script lang="ts">
+<script>
 	import { Badge } from '$lib/components/ui/badge';
 	import { Separator } from '$lib/components/ui/separator';
-	import type { Schema, SchemaProperty } from '$lib/types/component';
 
-	interface Props {
-		schema: Schema;
-	}
+	let { schema } = $props();
 
-	let { schema }: Props = $props();
-
-	function getTypeDisplay(prop: SchemaProperty): string {
+	function getTypeDisplay(prop) {
 		if (Array.isArray(prop.type)) {
 			return prop.type.join(' | ');
 		}
@@ -22,7 +17,7 @@
 		return prop.type || 'any';
 	}
 
-	function isRequired(key: string): boolean {
+	function isRequired(key) {
 		return schema.required?.includes(key) ?? false;
 	}
 </script>

@@ -1,4 +1,4 @@
-<script lang="ts">
+<script>
 	import { Input } from '$lib/components/ui/input';
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
 	import * as Collapsible from '$lib/components/ui/collapsible';
@@ -8,28 +8,26 @@
 	import ComponentPreview from '$lib/components/ComponentPreview.svelte';
 	import AiChatPanel from '$lib/components/AiChatPanel.svelte';
 	import TestPlanViewer from '$lib/components/TestPlanViewer.svelte';
-	import type { ConnectorComponent, ConnectorTree } from '$lib/types/component';
+
 	import { browser } from '$app/environment';
 	import { onMount, untrack } from 'svelte';
 	import { fileSync } from '$lib/stores/fileSync.svelte';
 
 	let searchQuery = $state('');
-	let selectedComponent = $state<ConnectorComponent | null>(null);
-	let expandedConnectors = $state<Set<string>>(new Set());
-	let expandedModules = $state<Set<string>>(new Set());
+	let selectedComponent = $state(null);
+	let expandedConnectors = $state(new Set());
+	let expandedModules = $state(new Set());
 	let showAiPanel = $state(false);
-	type EditorTab = 'properties' | 'testplan';
-	let activeTab = $state<EditorTab>('properties');
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	let testPlanData = $state<any[] | null>(null);
+	let activeTab = $state('properties');
+	let testPlanData = $state(null);
 	let testPlanLoading = $state(false);
-	let testPlanConnector = $state<string | null>(null);
+	let testPlanConnector = $state(null);
 
 	// Use the file sync store's tree instead of static data
 	let currentTree = $derived(fileSync.tree);
 
 	// Helper to find a component by its path
-	function findComponentByPath(path: string): ConnectorComponent | null {
+	function findComponentByPath(path) {
 		for (const connector of currentTree.connectors) {
 			for (const module of connector.modules) {
 				for (const component of module.components) {
@@ -50,7 +48,7 @@
 	});
 
 	// Helper to expand the tree to show a component
-	function expandTreeForComponent(component: ConnectorComponent) {
+	function expandTreeForComponent(component) {
 		const [connectorName, moduleName] = component.path.split('/');
 		expandedConnectors = new Set([...expandedConnectors, connectorName]);
 		expandedModules = new Set([...expandedModules, `${connectorName}/${moduleName}`]);
@@ -71,7 +69,7 @@
 	}
 
 	// Update URL when selection changes
-	function updateUrl(component: ConnectorComponent | null) {
+	function updateUrl(component) {
 		if (!browser) return;
 		if (component) {
 			const newHash = `#${encodeURIComponent(component.path)}`;
@@ -114,7 +112,7 @@
 		}
 
 		const query = searchQuery.toLowerCase();
-		const filtered: ConnectorTree = { connectors: [] };
+		const filtered = { connectors: [] };
 
 		for (const connector of currentTree.connectors) {
 			const filteredModules = [];
@@ -152,7 +150,7 @@
 		return filtered;
 	});
 
-	function toggleConnector(name: string) {
+	function toggleConnector(name) {
 		const newSet = new Set(expandedConnectors);
 		if (newSet.has(name)) {
 			newSet.delete(name);
@@ -162,7 +160,7 @@
 		expandedConnectors = newSet;
 	}
 
-	function toggleModule(key: string) {
+	function toggleModule(key) {
 		const newSet = new Set(expandedModules);
 		if (newSet.has(key)) {
 			newSet.delete(key);
@@ -172,7 +170,7 @@
 		expandedModules = newSet;
 	}
 
-	async function selectComponent(component: ConnectorComponent) {
+	async function selectComponent(component) {
 		// If connected, load fresh data from disk
 		if (fileSync.isConnected) {
 			await fileSync.loadComponentFromDirectory(component.path);
@@ -192,7 +190,7 @@
 			const connectorNames = new Set(filteredTree.connectors.map((c) => c.name));
 			expandedConnectors = connectorNames;
 
-			const moduleKeys = new Set<string>();
+			const moduleKeys = new Set();
 			for (const connector of filteredTree.connectors) {
 				for (const module of connector.modules) {
 					moduleKeys.add(`${connector.name}/${module.name}`);
@@ -203,7 +201,7 @@
 	});
 
 	// Keyboard shortcuts
-	function handleKeydown(event: KeyboardEvent) {
+	function handleKeydown(event) {
 		const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
 		const modifier = isMac ? event.metaKey : event.ctrlKey;
 
@@ -243,7 +241,7 @@
 	});
 
 	// Handle inspector input changes (label, tooltip edits)
-	function handleInspectorInputChange(portName: string, inputKey: string, field: string, value: string) {
+	function handleInspectorInputChange(portName, inputKey, field, value) {
 		if (!selectedComponent) return;
 
 		const componentJson = selectedComponent.componentJson;
@@ -259,7 +257,7 @@
 
 		if (inspector?.inputs && inspector.inputs[inputKey]) {
 			// Handle special fields that need transformation
-			let processedValue: unknown = value;
+			let processedValue = value;
 
 			if (field === 'levels') {
 				// Convert comma-separated string to array
@@ -267,7 +265,7 @@
 			}
 
 			// Update the field
-			(inspector.inputs[inputKey] as Record<string, unknown>)[field] = processedValue;
+			inspector.inputs[inputKey][field] = processedValue;
 
 			// Mark component as dirty
 			fileSync.markComponentDirty(selectedComponent.path);
@@ -278,7 +276,7 @@
 	}
 
 	// Handle required checkbox changes
-	function handleRequiredChange(portName: string, inputKey: string, required: boolean) {
+	function handleRequiredChange(portName, inputKey, required) {
 		if (!selectedComponent) return;
 
 		const componentJson = selectedComponent.componentJson;
@@ -298,7 +296,7 @@
 				schema.required = [];
 			}
 
-			const requiredArray = schema.required as string[];
+			const requiredArray = schema.required;
 			const index = requiredArray.indexOf(inputKey);
 
 			if (required && index === -1) {
@@ -318,7 +316,7 @@
 	}
 
 	// Handle input type changes
-	function handleTypeChange(portName: string, inputKey: string, newType: string) {
+	function handleTypeChange(portName, inputKey, newType) {
 		if (!selectedComponent) return;
 
 		const componentJson = selectedComponent.componentJson;
@@ -334,7 +332,7 @@
 
 		if (inspector?.inputs && inspector.inputs[inputKey]) {
 			// Update the type
-			(inspector.inputs[inputKey] as Record<string, unknown>).type = newType;
+			inspector.inputs[inputKey].type = newType;
 
 			// Mark component as dirty
 			fileSync.markComponentDirty(selectedComponent.path);
@@ -345,7 +343,7 @@
 	}
 
 	// Handle options changes for select/multiselect
-	function handleOptionsChange(portName: string, inputKey: string, options: unknown[]) {
+	function handleOptionsChange(portName, inputKey, options) {
 		if (!selectedComponent) return;
 
 		const componentJson = selectedComponent.componentJson;
@@ -361,7 +359,7 @@
 
 		if (inspector?.inputs && inspector.inputs[inputKey]) {
 			// Update the options
-			(inspector.inputs[inputKey] as Record<string, unknown>).options = options;
+			inspector.inputs[inputKey].options = options;
 
 			// Mark component as dirty
 			fileSync.markComponentDirty(selectedComponent.path);
@@ -372,7 +370,7 @@
 	}
 
 	// Handle fields changes for expression type
-	function handleFieldsChange(portName: string, inputKey: string, fields: unknown) {
+	function handleFieldsChange(portName, inputKey, fields) {
 		if (!selectedComponent) return;
 
 		const componentJson = selectedComponent.componentJson;
@@ -388,7 +386,7 @@
 
 		if (inspector?.inputs && inspector.inputs[inputKey]) {
 			// Update the fields
-			(inspector.inputs[inputKey] as Record<string, unknown>).fields = fields;
+			inspector.inputs[inputKey].fields = fields;
 
 			// Mark component as dirty
 			fileSync.markComponentDirty(selectedComponent.path);
@@ -406,16 +404,16 @@
 	});
 
 	// Handle AI-generated component JSON
-	function handleComponentGenerated(componentJson: unknown) {
+	function handleComponentGenerated(componentJson) {
 		if (!selectedComponent || !componentJson || typeof componentJson !== 'object') return;
 
 		// Merge the generated JSON into the selected component
 		const current = selectedComponent.componentJson;
-		const generated = componentJson as Record<string, unknown>;
+		const generated = componentJson;
 
 		// Update all top-level keys from the generated JSON
 		for (const [key, value] of Object.entries(generated)) {
-			(current as unknown as Record<string, unknown>)[key] = value;
+			current[key] = value;
 		}
 
 		// Mark as dirty
@@ -429,14 +427,14 @@
 	let testPlanStats = $derived.by(() => {
 		if (!testPlanData) return { passed: 0, failed: 0, total: 0 };
 		return {
-			passed: testPlanData.filter((t: { status?: string }) => t.status === 'passed').length,
-			failed: testPlanData.filter((t: { status?: string }) => t.status === 'failed').length,
+			passed: testPlanData.filter((t) => t.status === 'passed').length,
+			failed: testPlanData.filter((t) => t.status === 'failed').length,
 			total: testPlanData.length
 		};
 	});
 
 	// ── Test Plan ────────────────────────────────────────────────────────
-	async function loadTestPlanForConnector(connectorName: string) {
+	async function loadTestPlanForConnector(connectorName) {
 		if (testPlanConnector === connectorName && testPlanData !== null) return;
 		if (testPlanLoading) return;
 		testPlanLoading = true;
@@ -451,8 +449,7 @@
 		}
 	}
 
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	function handleTestPlanUpdated(updatedPlan: any[]) {
+	function handleTestPlanUpdated(updatedPlan) {
 		testPlanData = updatedPlan;
 		// Also persist to disk
 		if (testPlanConnector) {
@@ -490,7 +487,7 @@
 	});
 
 	// Handle source changes for dynamic options
-	function handleSourceChange(portName: string, inputKey: string, source: { url: string; data?: unknown } | null) {
+	function handleSourceChange(portName, inputKey, source) {
 		if (!selectedComponent) return;
 
 		const componentJson = selectedComponent.componentJson;
@@ -505,7 +502,7 @@
 		}
 
 		if (inspector?.inputs && inspector.inputs[inputKey]) {
-			const input = inspector.inputs[inputKey] as Record<string, unknown>;
+			const input = inspector.inputs[inputKey];
 			if (source) {
 				// Add or update source
 				input.source = source;

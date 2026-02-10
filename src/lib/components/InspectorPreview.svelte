@@ -1,4 +1,4 @@
-<script lang="ts">
+<script>
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
 	import { Button } from '$lib/components/ui/button';
@@ -17,14 +17,8 @@
 		Upload,
 		HelpCircle
 	} from 'lucide-svelte';
-	import type { Inspector, InspectorInput, InspectorGroup, Schema } from '$lib/types/component';
 
-	interface Props {
-		inspector: Inspector;
-		schema?: Schema;
-	}
-
-	let { inspector, schema }: Props = $props();
+	let { inspector, schema } = $props();
 
 	// Sort inputs by index
 	let sortedInputs = $derived.by(() => {
@@ -44,20 +38,20 @@
 
 	// Group inputs by their group property
 	let groupedInputs = $derived.by(() => {
-		const groups = new Map<string | null, [string, InspectorInput][]>();
+		const groups = new Map();
 
 		for (const [key, input] of sortedInputs) {
 			const groupKey = input.group ?? null;
 			if (!groups.has(groupKey)) {
 				groups.set(groupKey, []);
 			}
-			groups.get(groupKey)!.push([key, input]);
+			groups.get(groupKey).push([key, input]);
 		}
 
 		return groups;
 	});
 
-	function getTypeIcon(type: string) {
+	function getTypeIcon(type) {
 		switch (type) {
 			case 'text':
 				return Type;
@@ -80,7 +74,7 @@
 		}
 	}
 
-	function getSchemaType(key: string): string | undefined {
+	function getSchemaType(key) {
 		if (!schema?.properties?.[key]) return undefined;
 		const prop = schema.properties[key];
 		if (Array.isArray(prop.type)) return prop.type.join(' | ');
@@ -124,7 +118,7 @@
 	{/if}
 </div>
 
-{#snippet InspectorField(props: { key: string; input: InspectorInput; schemaType?: string })}
+{#snippet InspectorField(props)}
 	{@const { key, input, schemaType } = props}
 	{@const Icon = getTypeIcon(input.type)}
 	<div class="space-y-2">

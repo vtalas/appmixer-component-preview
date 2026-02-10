@@ -1,4 +1,4 @@
-<script lang="ts">
+<script>
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
 	import {
@@ -16,35 +16,14 @@
 		Wrench
 	} from 'lucide-svelte';
 
-	interface ToolCall {
-		id: string;
-		name: string;
-		input: Record<string, unknown>;
-		result?: string;
-		collapsed: boolean;
-	}
-
-	interface ChatMessage {
-		role: 'user' | 'assistant' | 'system';
-		content: string;
-		timestamp: Date;
-		componentJson?: unknown;
-		toolCalls?: ToolCall[];
-	}
-
-	interface Props {
-		onComponentGenerated?: (componentJson: unknown) => void;
-		context?: string;
-	}
-
-	let { onComponentGenerated, context = '' }: Props = $props();
+	let { onComponentGenerated, context = '' } = $props();
 
 	// Tauri shell plugin — imported dynamically so the app still loads in a browser
-	let Command: typeof import('@tauri-apps/plugin-shell').Command | null = null;
+	let Command = null;
 	let isTauri = false;
 
 	// Cached absolute path to the claude binary (resolved once via login shell)
-	let resolvedClaudePath: string | null = null;
+	let resolvedClaudePath = null;
 
 	// Detect Tauri environment and load the shell plugin
 	if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
@@ -75,31 +54,30 @@
 		});
 	}
 
-	let messages = $state<ChatMessage[]>([]);
+	let messages = $state([]);
 	let inputValue = $state('');
 	let isStreaming = $state(false);
-	let sessionId = $state<string | null>(null);
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	let childProcess = $state<any>(null);
-	let abortController: AbortController | null = null;  // browser-mode SSE abort
-	let chatContainer = $state<HTMLDivElement | null>(null);
+	let sessionId = $state(null);
+	let childProcess = $state(null);
+	let abortController = null;  // browser-mode SSE abort
+	let chatContainer = $state(null);
 	let collapsed = $state(false);
-	let copiedIndex = $state<number | null>(null);
+	let copiedIndex = $state(null);
 
 	// Debug log visible in the UI (since DevTools may not be available).
 	// Toggle with the hidden ?debug query param or by clicking the header 5 times.
-	let debugLog = $state<string[]>([]);
+	let debugLog = $state([]);
 	let showDebug = $state(
 		typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('debug')
 	);
-	function dbg(msg: string) {
+	function dbg(msg) {
 		console.log(msg);
 		debugLog = [...debugLog.slice(-50), `${new Date().toLocaleTimeString()} ${msg}`];
 	}
 
 	// Hidden activation: 5 rapid clicks on the header
 	let headerClickCount = 0;
-	let headerClickTimer: ReturnType<typeof setTimeout> | null = null;
+	let headerClickTimer = null;
 	function onHeaderClick() {
 		headerClickCount++;
 		if (headerClickTimer) clearTimeout(headerClickTimer);
@@ -122,7 +100,7 @@
 	}
 
 	// Build system prompt for Appmixer component generation
-	function buildSystemContext(): string {
+	function buildSystemContext() {
 		let systemCtx = `You are an AI assistant specialized in creating Appmixer connector components.
 
 When asked to create or modify a component, output a valid component.json JSON object.
@@ -154,8 +132,8 @@ IMPORTANT: When generating a component.json, output ONLY the JSON wrapped in a m
 	}
 
 	// Get a friendly label for a tool name
-	function getToolLabel(name: string): string {
-		const labels: Record<string, string> = {
+	function getToolLabel(name) {
+		const labels = {
 			Read: 'Read File',
 			Write: 'Write File',
 			Edit: 'Edit File',
@@ -173,39 +151,39 @@ IMPORTANT: When generating a component.json, output ONLY the JSON wrapped in a m
 	}
 
 	// Get a short summary of tool input
-	function getToolInputSummary(name: string, input: Record<string, unknown>): string {
+	function getToolInputSummary(name, input) {
 		switch (name) {
 			case 'Read':
-				return (input.file_path as string) || '';
+				return (input.file_path) || '';
 			case 'Write':
-				return (input.file_path as string) || '';
+				return (input.file_path) || '';
 			case 'Edit':
-				return (input.file_path as string) || '';
+				return (input.file_path) || '';
 			case 'Bash':
-				return (input.command as string) || '';
+				return (input.command) || '';
 			case 'Glob':
-				return (input.pattern as string) || '';
+				return (input.pattern) || '';
 			case 'Grep':
-				return (input.pattern as string) || '';
+				return (input.pattern) || '';
 			case 'Task':
-				return (input.description as string) || (input.prompt as string)?.slice(0, 80) || '';
+				return (input.description) || (input.prompt)?.slice(0, 80) || '';
 			case 'WebFetch':
-				return (input.url as string) || '';
+				return (input.url) || '';
 			case 'WebSearch':
-				return (input.query as string) || '';
+				return (input.query) || '';
 			default:
 				return JSON.stringify(input).slice(0, 120);
 		}
 	}
 
 	// Truncate tool result for display
-	function truncateResult(text: string, maxLines = 20): string {
+	function truncateResult(text, maxLines = 20) {
 		const lines = text.split('\n');
 		if (lines.length <= maxLines) return text;
 		return lines.slice(0, maxLines).join('\n') + `\n... (${lines.length - maxLines} more lines)`;
 	}
 
-	function toggleToolCollapse(msgIndex: number, toolIndex: number) {
+	function toggleToolCollapse(msgIndex, toolIndex) {
 		const updated = [...messages];
 		const msg = updated[msgIndex];
 		if (msg.toolCalls && msg.toolCalls[toolIndex]) {
@@ -218,7 +196,7 @@ IMPORTANT: When generating a component.json, output ONLY the JSON wrapped in a m
 	}
 
 	// Helper: update tool call result immutably
-	function updateToolCallResult(calls: ToolCall[], toolUseId: string, result: string): ToolCall[] {
+	function updateToolCallResult(calls, toolUseId, result) {
 		return calls.map(tc =>
 			tc.id === toolUseId ? { ...tc, result: truncateResult(result, 30) } : tc
 		);
@@ -228,31 +206,26 @@ IMPORTANT: When generating a component.json, output ONLY the JSON wrapped in a m
 	// Processes a single JSON event from claude --output-format stream-json
 	// and mutates the running state (assistantContent, currentToolCalls).
 	// Returns true when the UI should be refreshed.
-	interface StreamState {
-		assistantContent: string;
-		currentToolCalls: ToolCall[];
-	}
-
-	function processStreamEvent(event: Record<string, unknown>, state: StreamState): boolean {
+	function processStreamEvent(event, state) {
 		let needsUpdate = false;
 
 		if (event.type === 'system') {
-			if (event.session_id) sessionId = event.session_id as string;
+			if (event.session_id) sessionId = event.session_id;
 		} else if (event.type === 'done') {
-			if (event.session_id) sessionId = event.session_id as string;
+			if (event.session_id) sessionId = event.session_id;
 		} else if (event.type === 'assistant') {
-			const msg = event.message as Record<string, unknown> | undefined;
+			const msg = event.message;
 			if (msg?.content && Array.isArray(msg.content)) {
-				for (const block of msg.content as Record<string, unknown>[]) {
+				for (const block of msg.content) {
 					if (block.type === 'text') {
-						state.assistantContent = block.text as string;
+						state.assistantContent = block.text;
 						needsUpdate = true;
 					} else if (block.type === 'tool_use') {
 						if (!state.currentToolCalls.some(tc => tc.id === block.id)) {
 							state.currentToolCalls = [...state.currentToolCalls, {
-								id: block.id as string,
-								name: block.name as string,
-								input: (block.input as Record<string, unknown>) || {},
+								id: block.id,
+								name: block.name,
+								input: (block.input) || {},
 								collapsed: true
 							}];
 							needsUpdate = true;
@@ -260,31 +233,31 @@ IMPORTANT: When generating a component.json, output ONLY the JSON wrapped in a m
 					}
 				}
 			}
-			if (event.session_id) sessionId = event.session_id as string;
+			if (event.session_id) sessionId = event.session_id;
 		} else if (event.type === 'content_block_delta') {
-			const delta = event.delta as Record<string, unknown> | undefined;
+			const delta = event.delta;
 			if (delta?.text) {
-				state.assistantContent += delta.text as string;
+				state.assistantContent += delta.text;
 				needsUpdate = true;
 			}
 		} else if (event.type === 'user') {
-			const msg = event.message as Record<string, unknown> | undefined;
+			const msg = event.message;
 			if (msg?.content) {
 				const contentItems = Array.isArray(msg.content)
 					? msg.content
 					: [msg.content];
-				for (const item of contentItems as Record<string, unknown>[]) {
+				for (const item of contentItems) {
 					if (item.type === 'tool_result' && item.tool_use_id) {
 						let resultText = '';
 						if (typeof item.content === 'string') {
 							resultText = item.content;
 						} else if (item.content && typeof item.content === 'object') {
-							const c = item.content as Record<string, unknown>;
-							resultText = (c.text as string) || JSON.stringify(c, null, 2);
+							const c = item.content;
+							resultText = (c.text) || JSON.stringify(c, null, 2);
 						}
 						if (resultText) {
 							state.currentToolCalls = updateToolCallResult(
-								state.currentToolCalls, item.tool_use_id as string, resultText
+								state.currentToolCalls, item.tool_use_id, resultText
 							);
 							needsUpdate = true;
 						}
@@ -294,26 +267,26 @@ IMPORTANT: When generating a component.json, output ONLY the JSON wrapped in a m
 			// Also check tool_use_result at top level
 			if (event.tool_use_result) {
 				const contentItems = Array.isArray(
-					(event.message as Record<string, unknown> | undefined)?.content
+					event.message?.content
 				)
-					? ((event.message as Record<string, unknown>).content as Record<string, unknown>[])
-					: [(event.message as Record<string, unknown> | undefined)?.content].filter(Boolean) as Record<string, unknown>[];
+					? (event.message.content)
+					: [event.message?.content].filter(Boolean);
 				for (const item of contentItems) {
 					if (item.tool_use_id) {
 						const existing = state.currentToolCalls.find(tc => tc.id === item.tool_use_id);
 						if (existing && !existing.result) {
-							const r = event.tool_use_result as Record<string, unknown>;
+							const r = event.tool_use_result;
 							let resultText = '';
-							if (r.file && (r.file as Record<string, unknown>).content) {
-								resultText = (r.file as Record<string, unknown>).content as string;
+							if (r.file && r.file.content) {
+								resultText = r.file.content;
 							} else if (typeof r === 'string') {
 								resultText = r;
 							} else if (r.text) {
-								resultText = r.text as string;
+								resultText = r.text;
 							}
 							if (resultText) {
 								state.currentToolCalls = updateToolCallResult(
-									state.currentToolCalls, item.tool_use_id as string, resultText
+									state.currentToolCalls, item.tool_use_id, resultText
 								);
 								needsUpdate = true;
 							}
@@ -327,16 +300,16 @@ IMPORTANT: When generating a component.json, output ONLY the JSON wrapped in a m
 					state.assistantContent = event.content;
 					needsUpdate = true;
 				} else if (Array.isArray(event.content)) {
-					for (const block of event.content as Record<string, unknown>[]) {
+					for (const block of event.content) {
 						if (block.type === 'text') {
-							state.assistantContent = block.text as string;
+							state.assistantContent = block.text;
 							needsUpdate = true;
 						} else if (block.type === 'tool_use') {
 							if (!state.currentToolCalls.some(tc => tc.id === block.id)) {
 								state.currentToolCalls = [...state.currentToolCalls, {
-									id: block.id as string,
-									name: block.name as string,
-									input: (block.input as Record<string, unknown>) || {},
+									id: block.id,
+									name: block.name,
+									input: (block.input) || {},
 									collapsed: true
 								}];
 								needsUpdate = true;
@@ -345,16 +318,16 @@ IMPORTANT: When generating a component.json, output ONLY the JSON wrapped in a m
 					}
 				}
 			}
-			if (event.session_id) sessionId = event.session_id as string;
+			if (event.session_id) sessionId = event.session_id;
 		} else if (event.type === 'result') {
 			if (event.result && !state.assistantContent) {
-				state.assistantContent = event.result as string;
+				state.assistantContent = event.result;
 				needsUpdate = true;
 			}
-			if (event.session_id) sessionId = event.session_id as string;
+			if (event.session_id) sessionId = event.session_id;
 		} else if (event.type === 'error') {
 			state.assistantContent += (state.assistantContent ? '\n\n' : '') +
-				`Error: ${(event.message as string) || 'Unknown error'}`;
+				`Error: ${(event.message) || 'Unknown error'}`;
 			needsUpdate = true;
 		}
 
@@ -362,10 +335,10 @@ IMPORTANT: When generating a component.json, output ONLY the JSON wrapped in a m
 	}
 
 	// Push the current stream state into the messages array
-	function flushStreamState(state: StreamState) {
+	function flushStreamState(state) {
 		const updated = [...messages];
 		updated[updated.length - 1] = {
-			role: 'assistant' as const,
+			role: 'assistant',
 			content: state.assistantContent,
 			timestamp: updated[updated.length - 1].timestamp,
 			toolCalls: state.currentToolCalls.map(tc => ({ ...tc }))
@@ -405,7 +378,7 @@ IMPORTANT: When generating a component.json, output ONLY the JSON wrapped in a m
 			toolCalls: []
 		}];
 
-		const state: StreamState = {
+		const state = {
 			assistantContent: '',
 			currentToolCalls: []
 		};
@@ -441,7 +414,7 @@ IMPORTANT: When generating a component.json, output ONLY the JSON wrapped in a m
 				let stdoutBuffer = '';
 
 				// Register ALL event handlers BEFORE spawning
-				cmd.stdout.on('data', (chunk: string) => {
+				cmd.stdout.on('data', (chunk) => {
 					dbg(`[stdout] ${JSON.stringify(chunk).slice(0, 120)}`);
 					stdoutBuffer += chunk;
 
@@ -465,12 +438,12 @@ IMPORTANT: When generating a component.json, output ONLY the JSON wrapped in a m
 					}
 				});
 
-				cmd.stderr.on('data', (line: string) => {
+				cmd.stderr.on('data', (line) => {
 					dbg(`[stderr] ${line.slice(0, 120)}`);
 				});
 
 				// Register close/error handlers BEFORE spawn to avoid race
-				const closePromise = new Promise<void>((resolve) => {
+				const closePromise = new Promise((resolve) => {
 					cmd.on('close', (data) => {
 						dbg(`[close] ${JSON.stringify(data)}`);
 						// Process any remaining buffer
@@ -487,7 +460,7 @@ IMPORTANT: When generating a component.json, output ONLY the JSON wrapped in a m
 						}
 						resolve();
 					});
-					cmd.on('error', (err: string) => {
+					cmd.on('error', (err) => {
 						dbg(`[error] ${err}`);
 						state.assistantContent += (state.assistantContent ? '\n\n' : '') +
 							`Error: ${err}`;
@@ -618,7 +591,7 @@ IMPORTANT: When generating a component.json, output ONLY the JSON wrapped in a m
 	}
 
 	// Extract JSON from markdown code blocks
-	function extractComponentJson(text: string): unknown | null {
+	function extractComponentJson(text) {
 		const jsonMatch = text.match(/```json\s*\n([\s\S]*?)\n```/);
 		if (jsonMatch) {
 			try {
@@ -634,13 +607,13 @@ IMPORTANT: When generating a component.json, output ONLY the JSON wrapped in a m
 		return null;
 	}
 
-	function applyComponent(componentJson: unknown) {
+	function applyComponent(componentJson) {
 		if (onComponentGenerated) {
 			onComponentGenerated(componentJson);
 		}
 	}
 
-	function copyToClipboard(text: string, index: number) {
+	function copyToClipboard(text, index) {
 		navigator.clipboard.writeText(text);
 		copiedIndex = index;
 		setTimeout(() => {
@@ -648,7 +621,7 @@ IMPORTANT: When generating a component.json, output ONLY the JSON wrapped in a m
 		}, 2000);
 	}
 
-	function handleKeydown(e: KeyboardEvent) {
+	function handleKeydown(e) {
 		if (e.key === 'Enter' && !e.shiftKey) {
 			e.preventDefault();
 			sendMessage();
@@ -656,7 +629,7 @@ IMPORTANT: When generating a component.json, output ONLY the JSON wrapped in a m
 	}
 
 	// Simple markdown-ish rendering for code blocks
-	function formatContent(content: string): string {
+	function formatContent(content) {
 		// Escape HTML
 		let html = content
 			.replace(/&/g, '&amp;')

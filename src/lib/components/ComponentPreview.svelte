@@ -1,22 +1,11 @@
-<script lang="ts">
+<script>
 	import * as Tabs from '$lib/components/ui/tabs';
 	import { Separator } from '$lib/components/ui/separator';
 	import { Badge } from '$lib/components/ui/badge';
 	import InspectorEditor from './InspectorEditor.svelte';
 	import SchemaPreview from './SchemaPreview.svelte';
-	import type { ComponentJson } from '$lib/types/component';
 
-	interface Props {
-		componentJson: ComponentJson;
-		onInspectorInputChange?: (portName: string, inputKey: string, field: string, value: string) => void;
-		onRequiredChange?: (portName: string, inputKey: string, required: boolean) => void;
-		onTypeChange?: (portName: string, inputKey: string, newType: string) => void;
-		onOptionsChange?: (portName: string, inputKey: string, options: unknown[]) => void;
-		onFieldsChange?: (portName: string, inputKey: string, fields: unknown) => void;
-		onSourceChange?: (portName: string, inputKey: string, source: { url: string; data?: unknown } | null) => void;
-	}
-
-	let { componentJson, onInspectorInputChange, onRequiredChange, onTypeChange, onOptionsChange, onFieldsChange, onSourceChange }: Props = $props();
+	let { componentJson, onInspectorInputChange, onRequiredChange, onTypeChange, onOptionsChange, onFieldsChange, onSourceChange } = $props();
 
 	let hasProperties = $derived(
 		componentJson.properties?.inspector || componentJson.properties?.schema
@@ -28,8 +17,8 @@
 	let defaultTab = $derived(hasInPorts ? 'inputs' : hasProperties ? 'properties' : 'outputs');
 
 	// Create handler for input changes
-	function createInputChangeHandler(portName: string) {
-		return (inputKey: string, field: string, value: string) => {
+	function createInputChangeHandler(portName) {
+		return (inputKey, field, value) => {
 			if (onInspectorInputChange) {
 				onInspectorInputChange(portName, inputKey, field, value);
 			}
@@ -37,8 +26,8 @@
 	}
 
 	// Create handler for required changes
-	function createRequiredChangeHandler(portName: string) {
-		return (inputKey: string, required: boolean) => {
+	function createRequiredChangeHandler(portName) {
+		return (inputKey, required) => {
 			if (onRequiredChange) {
 				onRequiredChange(portName, inputKey, required);
 			}
@@ -46,8 +35,8 @@
 	}
 
 	// Create handler for type changes
-	function createTypeChangeHandler(portName: string) {
-		return (inputKey: string, newType: string) => {
+	function createTypeChangeHandler(portName) {
+		return (inputKey, newType) => {
 			if (onTypeChange) {
 				onTypeChange(portName, inputKey, newType);
 			}
@@ -55,8 +44,8 @@
 	}
 
 	// Create handler for options changes
-	function createOptionsChangeHandler(portName: string) {
-		return (inputKey: string, options: unknown[]) => {
+	function createOptionsChangeHandler(portName) {
+		return (inputKey, options) => {
 			if (onOptionsChange) {
 				onOptionsChange(portName, inputKey, options);
 			}
@@ -64,8 +53,8 @@
 	}
 
 	// Create handler for fields changes (expression)
-	function createFieldsChangeHandler(portName: string) {
-		return (inputKey: string, fields: unknown) => {
+	function createFieldsChangeHandler(portName) {
+		return (inputKey, fields) => {
 			if (onFieldsChange) {
 				onFieldsChange(portName, inputKey, fields);
 			}
@@ -73,8 +62,8 @@
 	}
 
 	// Create handler for source changes (dynamic options)
-	function createSourceChangeHandler(portName: string) {
-		return (inputKey: string, source: { url: string; data?: unknown } | null) => {
+	function createSourceChangeHandler(portName) {
+		return (inputKey, source) => {
 			if (onSourceChange) {
 				onSourceChange(portName, inputKey, source);
 			}

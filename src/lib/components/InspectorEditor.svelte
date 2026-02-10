@@ -1,4 +1,4 @@
-<script lang="ts">
+<script>
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
 	import { Button } from '$lib/components/ui/button';
@@ -19,7 +19,7 @@
 		Link,
 		Search
 	} from 'lucide-svelte';
-	import type { Inspector, InspectorInput, Schema } from '$lib/types/component';
+
 	import { fileSync } from '$lib/stores/fileSync.svelte';
 
 	// Available input types
@@ -36,34 +36,22 @@
 		{ value: 'filepicker', label: 'File Picker' }
 	];
 
-	interface Props {
-		inspector: Inspector;
-		schema?: Schema;
-		portName?: string;
-		onInputChange?: (inputKey: string, field: string, value: string) => void;
-		onRequiredChange?: (inputKey: string, required: boolean) => void;
-		onTypeChange?: (inputKey: string, newType: string) => void;
-		onOptionsChange?: (inputKey: string, options: unknown[]) => void;
-		onFieldsChange?: (inputKey: string, fields: unknown) => void;
-		onSourceChange?: (inputKey: string, source: { url: string; data?: unknown } | null) => void;
-	}
-
-	let { inspector, schema, portName = 'in', onInputChange, onRequiredChange, onTypeChange, onOptionsChange, onFieldsChange, onSourceChange }: Props = $props();
+	let { inspector, schema, portName = 'in', onInputChange, onRequiredChange, onTypeChange, onOptionsChange, onFieldsChange, onSourceChange } = $props();
 
 	// Track expanded options editors
-	let expandedOptionsEditors = $state<Set<string>>(new Set());
+	let expandedOptionsEditors = $state(new Set());
 
 	// Track which fields are being edited
-	let editingLabel = $state<string | null>(null);
-	let editingTooltip = $state<string | null>(null);
+	let editingLabel = $state(null);
+	let editingTooltip = $state(null);
 	let editLabelValue = $state('');
 	let editTooltipValue = $state('');
 
 	// Form values state
-	let formValues = $state<Record<string, unknown>>({});
+	let formValues = $state({});
 
 	// Group expansion state
-	let expandedGroups = $state<Set<string>>(new Set());
+	let expandedGroups = $state(new Set());
 
 	// Initialize all groups as expanded
 	$effect(() => {
@@ -90,20 +78,20 @@
 
 	// Group inputs by their group property
 	let groupedInputs = $derived.by(() => {
-		const groups = new Map<string | null, [string, InspectorInput][]>();
+		const groups = new Map();
 
 		for (const [key, input] of sortedInputs) {
 			const groupKey = input.group ?? null;
 			if (!groups.has(groupKey)) {
 				groups.set(groupKey, []);
 			}
-			groups.get(groupKey)!.push([key, input]);
+			groups.get(groupKey).push([key, input]);
 		}
 
 		return groups;
 	});
 
-	function toggleGroup(groupKey: string) {
+	function toggleGroup(groupKey) {
 		const newSet = new Set(expandedGroups);
 		if (newSet.has(groupKey)) {
 			newSet.delete(groupKey);
@@ -113,25 +101,25 @@
 		expandedGroups = newSet;
 	}
 
-	function isRequired(key: string): boolean {
+	function isRequired(key) {
 		return schema?.required?.includes(key) ?? false;
 	}
 
-	function getInputValue(key: string): unknown {
+	function getInputValue(key) {
 		return formValues[key] ?? '';
 	}
 
-	function setInputValue(key: string, value: unknown) {
+	function setInputValue(key, value) {
 		formValues[key] = value;
 	}
 
 	// Label editing functions
-	function startEditLabel(key: string, currentLabel: string) {
+	function startEditLabel(key, currentLabel) {
 		editingLabel = key;
 		editLabelValue = currentLabel;
 	}
 
-	function saveLabel(key: string) {
+	function saveLabel(key) {
 		if (onInputChange && editLabelValue.trim()) {
 			onInputChange(key, 'label', editLabelValue.trim());
 		}
@@ -144,12 +132,12 @@
 	}
 
 	// Tooltip editing functions
-	function startEditTooltip(key: string, currentTooltip: string) {
+	function startEditTooltip(key, currentTooltip) {
 		editingTooltip = key;
 		editTooltipValue = currentTooltip;
 	}
 
-	function saveTooltip(key: string) {
+	function saveTooltip(key) {
 		if (onInputChange) {
 			onInputChange(key, 'tooltip', editTooltipValue.trim());
 		}
@@ -162,7 +150,7 @@
 	}
 
 	// Toggle required state
-	function toggleRequired(key: string) {
+	function toggleRequired(key) {
 		const currentRequired = isRequired(key);
 		if (onRequiredChange) {
 			onRequiredChange(key, !currentRequired);
@@ -170,14 +158,14 @@
 	}
 
 	// Handle type change
-	function handleTypeChange(key: string, newType: string) {
+	function handleTypeChange(key, newType) {
 		if (onTypeChange) {
 			onTypeChange(key, newType);
 		}
 	}
 
 	// Toggle options editor expansion
-	function toggleOptionsEditor(key: string) {
+	function toggleOptionsEditor(key) {
 		const newSet = new Set(expandedOptionsEditors);
 		if (newSet.has(key)) {
 			newSet.delete(key);
@@ -188,23 +176,23 @@
 	}
 
 	// Normalize options to always be array of { content, value } or { label, value }
-	function normalizeOptions(options: unknown[] | undefined): Array<{ content?: string; label?: string; value: string }> {
+	function normalizeOptions(options) {
 		if (!options) return [];
 		return options.map(opt => {
 			if (typeof opt === 'string') {
 				return { content: opt, value: opt };
 			}
-			return opt as { content?: string; label?: string; value: string };
+			return opt;
 		});
 	}
 
 	// Get display label for an option
-	function getOptionLabel(opt: { content?: string; label?: string; value: string }): string {
+	function getOptionLabel(opt) {
 		return opt.content || opt.label || opt.value;
 	}
 
 	// Add new option
-	function addOption(key: string, input: InspectorInput) {
+	function addOption(key, input) {
 		const currentOptions = normalizeOptions(input.options);
 		const newOptions = [...currentOptions, { content: '', value: '' }];
 		if (onOptionsChange) {
@@ -213,7 +201,7 @@
 	}
 
 	// Update option
-	function updateOption(key: string, input: InspectorInput, index: number, field: 'content' | 'value', newValue: string) {
+	function updateOption(key, input, index, field, newValue) {
 		const currentOptions = normalizeOptions(input.options);
 		const updated = [...currentOptions];
 		updated[index] = { ...updated[index], [field]: newValue };
@@ -223,7 +211,7 @@
 	}
 
 	// Remove option
-	function removeOption(key: string, input: InspectorInput, index: number) {
+	function removeOption(key, input, index) {
 		const currentOptions = normalizeOptions(input.options);
 		const updated = currentOptions.filter((_, i) => i !== index);
 		if (onOptionsChange) {
@@ -232,12 +220,12 @@
 	}
 
 	// Check if type supports options
-	function supportsOptions(type: string | undefined): boolean {
+	function supportsOptions(type) {
 		return type === 'select' || type === 'multiselect';
 	}
 
 	// Check if type is expression
-	function isExpression(type: string | undefined): boolean {
+	function isExpression(type) {
 		return type === 'expression';
 	}
 
@@ -251,7 +239,7 @@
 	];
 
 	// Add expression field
-	function addExpressionField(key: string, input: InspectorInput) {
+	function addExpressionField(key, input) {
 		const currentFields = input.fields || {};
 		const newFieldKey = `field${Object.keys(currentFields).length + 1}`;
 		const newFields = {
@@ -267,8 +255,8 @@
 	}
 
 	// Update expression field
-	function updateExpressionField(key: string, input: InspectorInput, fieldKey: string, prop: string, value: unknown) {
-		const currentFields = input.fields as Record<string, Record<string, unknown>> || {};
+	function updateExpressionField(key, input, fieldKey, prop, value) {
+		const currentFields = input.fields || {};
 		const newFields = {
 			...currentFields,
 			[fieldKey]: {
@@ -282,8 +270,8 @@
 	}
 
 	// Remove expression field
-	function removeExpressionField(key: string, input: InspectorInput, fieldKey: string) {
-		const currentFields = { ...(input.fields as Record<string, unknown> || {}) };
+	function removeExpressionField(key, input, fieldKey) {
+		const currentFields = { ...(input.fields || {}) };
 		delete currentFields[fieldKey];
 		if (onFieldsChange) {
 			onFieldsChange(key, currentFields);
@@ -291,24 +279,16 @@
 	}
 
 	// Track editing field state
-	let editingExpressionField = $state<string | null>(null);
+	let editingExpressionField = $state(null);
 
 	// Component picker state
-	let showComponentPicker = $state<string | null>(null);
+	let showComponentPicker = $state(null);
 	let componentSearchQuery = $state('');
 	let selectedOutPort = $state('out');
 
 	// Get all components with outPorts from fileSync tree
 	let allComponentsWithOutPorts = $derived.by(() => {
-		const components: Array<{
-			name: string;
-			label: string;
-			path: string;
-			connectorName: string;
-			moduleName: string;
-			outPorts: Array<{ name: string }>;
-			icon?: string;
-		}> = [];
+		const components = [];
 
 		for (const connector of fileSync.tree.connectors) {
 			for (const module of connector.modules) {
@@ -346,12 +326,12 @@
 	});
 
 	// Generate source URL from component
-	function generateSourceUrl(connectorName: string, moduleName: string, componentName: string, outPort: string): string {
+	function generateSourceUrl(connectorName, moduleName, componentName, outPort) {
 		return `/component/${connectorName}/${moduleName}/${componentName}?outPort=${outPort}`;
 	}
 
 	// Parse source URL to extract component info
-	function parseSourceUrl(url: string): { connectorName: string; moduleName: string; componentName: string; outPort: string } | null {
+	function parseSourceUrl(url) {
 		const match = url.match(/^\/component\/([^/]+)\/([^/]+)\/([^?]+)\?outPort=(.+)$/);
 		if (match) {
 			return {
@@ -365,7 +345,7 @@
 	}
 
 	// Open component picker
-	function openComponentPicker(key: string, currentSource?: { url: string }) {
+	function openComponentPicker(key, currentSource) {
 		showComponentPicker = key;
 		componentSearchQuery = '';
 		if (currentSource?.url) {
@@ -385,7 +365,7 @@
 	}
 
 	// Select component from picker
-	function selectComponent(key: string, comp: typeof allComponentsWithOutPorts[0], outPort: string) {
+	function selectComponent(key, comp, outPort) {
 		const url = generateSourceUrl(comp.connectorName, comp.moduleName, comp.name, outPort);
 		if (onSourceChange) {
 			onSourceChange(key, { url });
@@ -394,14 +374,14 @@
 	}
 
 	// Remove source (switch to static options)
-	function removeSource(key: string) {
+	function removeSource(key) {
 		if (onSourceChange) {
 			onSourceChange(key, null);
 		}
 	}
 
 	// Add source (switch to dynamic)
-	function addSource(key: string) {
+	function addSource(key) {
 		openComponentPicker(key);
 	}
 </script>
@@ -453,7 +433,7 @@
 	{/if}
 </div>
 
-{#snippet InputField(key: string, input: InspectorInput)}
+{#snippet InputField(key, input)}
 	<div class="input-field">
 		<div class="input-label-row">
 			{#if editingLabel === key}

@@ -1,4 +1,5 @@
-<script lang="ts">
+<script>
+	import { tick } from 'svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import {
@@ -16,14 +17,17 @@
 		Bot,
 		Square,
 		Sparkles,
-		ExternalLink
+		ExternalLink,
+		Trash2,
+		RotateCw,
+		Pencil
 	} from 'lucide-svelte';
 
 	// Tauri shell plugin — imported dynamically.
 	// These MUST be $state so Svelte re-renders when they become available.
-	let Command = $state<typeof import('@tauri-apps/plugin-shell').Command | null>(null);
+	let Command = $state(null);
 	let isTauri = $state(false);
-	let resolvedAppmixerPath = $state<string | null>(null);
+	let resolvedAppmixerPath = $state(null);
 
 	if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
 		isTauri = true;
@@ -41,42 +45,12 @@
 		});
 	}
 
-	interface TestCommand {
-		exitCode: number;
-		cmd: string;
-		command?: string;
-		stdout: string;
-		stderr: string;
-		duration?: number;
-	}
+	let { testPlan, connectorName, connectorsDir, onTestPlanUpdated, onReloadTestPlan } = $props();
 
-	interface TestPlanItem {
-		name: string;
-		completed: boolean;
-		status?: string | null;
-		result: {
-			commands?: TestCommand[];
-		};
-		ignored?: boolean;
-		reason?: string | null;
-		description?: string | null;
-	}
-
-	interface Props {
-		testPlan: TestPlanItem[];
-		connectorName: string;
-		connectorsDir: string;
-		onTestPlanUpdated?: (testPlan: TestPlanItem[]) => void;
-		onReloadTestPlan?: () => void;
-	}
-
-	let { testPlan, connectorName, connectorsDir, onTestPlanUpdated, onReloadTestPlan }: Props = $props();
-
-	type FilterMode = 'all' | 'passed' | 'failed' | 'pending' | 'ignored';
-	let filterMode = $state<FilterMode>('all');
-	let expandedTests = $state<Set<string>>(new Set());
-	let expandedCommands = $state<Set<string>>(new Set());
-	let runningTests = $state<Set<string>>(new Set());
+	let filterMode = $state('all');
+	let expandedTests = $state(new Set());
+	let expandedCommands = $state(new Set());
+	let runningTests = $state(new Set());
 	let runningAll = $state(false);
 
 	// Summary stats
@@ -105,7 +79,7 @@
 		});
 	});
 
-	function getStatusColor(item: TestPlanItem): string {
+	function getStatusColor(item) {
 		if (item.ignored) return 'muted';
 		if (!item.completed) return 'pending';
 		if (item.status === 'passed') return 'passed';
@@ -113,40 +87,40 @@
 		return 'pending';
 	}
 
-	function toggleTest(name: string) {
+	function toggleTest(name) {
 		const newSet = new Set(expandedTests);
 		if (newSet.has(name)) newSet.delete(name);
 		else newSet.add(name);
 		expandedTests = newSet;
 	}
 
-	function toggleCommand(key: string) {
+	function toggleCommand(key) {
 		const newSet = new Set(expandedCommands);
 		if (newSet.has(key)) newSet.delete(key);
 		else newSet.add(key);
 		expandedCommands = newSet;
 	}
 
-	function formatDuration(ms: number | undefined): string {
+	function formatDuration(ms) {
 		if (!ms) return '';
 		if (ms < 1000) return `${ms}ms`;
 		return `${(ms / 1000).toFixed(1)}s`;
 	}
 
-	function getDisplayCommand(cmd: TestCommand): string {
+	function getDisplayCommand(cmd) {
 		// Use the relative command if available, otherwise the full cmd
 		return cmd.command || cmd.cmd;
 	}
 
 	// Strip ANSI color codes for clean display
-	function stripAnsi(str: string): string {
+	function stripAnsi(str) {
 		return str.replace(/\x1b\[[0-9;]*m/g, '');
 	}
 
 	// Extract meaningful output from stdout (skip boilerplate), with max length cap
-	function extractOutput(stdout: string, maxLen = 5000): string {
+	function extractOutput(stdout, maxLen = 5000) {
 		const clean = stripAnsi(stdout);
-		let output: string;
+		let output;
 		// Find the actual component output
 		const outputMatch = clean.match(/Component has send a message to output port: \w+\n([\s\S]*?)(?:\n\nComponent's receive method|\n\nStopping component|$)/);
 		if (outputMatch) {
@@ -174,7 +148,7 @@
 	 * Resolve the full component path from a test plan item.
 	 * Strategy: 1) Extract from previous command, 2) Try common modules, 3) Use `find`
 	 */
-	function resolveComponentPath(item: TestPlanItem): string {
+	function resolveComponentPath(item) {
 		// Try to extract from a previous command
 		if (item.result?.commands?.length) {
 			for (const cmd of item.result.commands) {
@@ -186,7 +160,7 @@
 		return `${connectorsDir}/src/appmixer/${connectorName}/core/${item.name}`;
 	}
 
-	async function runSingleTest(item: TestPlanItem) {
+	async function runSingleTest(item) {
 		if (!isTauri || !Command || !resolvedAppmixerPath) return;
 
 		runningTests = new Set([...runningTests, item.name]);
@@ -199,15 +173,15 @@
 			let inputsArg = '';
 			if (item.result?.commands?.length) {
 				const lastCmd = item.result.commands[item.result.commands.length - 1];
-				const inputMatch = (lastCmd.cmd || '').match(/-i\s+(\{[^}]*\}(?:\})*)/);
+				const inputMatch = (lastCmd.cmd || '').match(/-i\s+(\{.*\})/);
 				if (inputMatch) {
 					inputsArg = ` -i '$APPMIXER_TEST_INPUTS'`;
 				}
 			}
 
-			const env: Record<string, string> = {};
+			const env = {};
 			if (inputsArg) {
-				const lastCmd = item.result!.commands![item.result!.commands!.length - 1];
+				const lastCmd = item.result.commands[item.result.commands.length - 1];
 				const inputMatch = (lastCmd.cmd || '').match(/-i\s+(\{.*\})/);
 				if (inputMatch) env.APPMIXER_TEST_INPUTS = inputMatch[1];
 			}
@@ -220,7 +194,7 @@
 			const result = await cmd.execute();
 			const duration = Date.now() - startTime;
 			const relPath = componentPath.replace(/^.*?(src\/appmixer\/)/, '$1');
-			const newCommand: TestCommand = {
+			const newCommand = {
 				exitCode: result.code ?? 1,
 				cmd: `appmixer test component ${componentPath}${inputsArg ? ` -i ${env.APPMIXER_TEST_INPUTS || ''}` : ''}`,
 				command: `appmixer test component ${relPath}`,
@@ -256,26 +230,283 @@
 		}
 	}
 
-	async function runAllTests() {
-		if (!isTauri || !Command || !resolvedAppmixerPath) return;
+	async function runAllAiTests() {
+		if (!isTauri || !Command || !resolvedNodePath) return;
 		runningAll = true;
 
-		const pendingItems = testPlan.filter(item => !item.ignored);
-		for (const item of pendingItems) {
-			if (!runningAll) break; // allow stopping
-			await runSingleTest(item);
+		const items = testPlan.filter(item => !item.ignored);
+		for (const item of items) {
+			if (!runningAll) break;
+			await runAiTest(item.name);
+			// Wait for the AI test to finish before starting the next
+			await new Promise(resolve => {
+				const check = setInterval(() => {
+					if (!aiTestRunning) {
+						clearInterval(check);
+						resolve();
+					}
+				}, 500);
+			});
 		}
 
 		runningAll = false;
 	}
 
+	/**
+	 * Re-run a single command from a test item's history.
+	 * Creates a new row immediately (with "running" state), streams output into it,
+	 * then updates exit code when done.
+	 */
+	let runningCommand = $state(null);
+
+	// ── Edit Command ─────────────────────────────────────────────────
+	let editingCmd = $state(null); // { itemName, cmdIndex, inputJson, error }
+
+	/** Find the balanced JSON object after `-i` in a command string. */
+	function extractInputJsonRange(cmdStr) {
+		const flagMatch = cmdStr.match(/-i\s+'?/);
+		if (!flagMatch) return null;
+		let start = flagMatch.index + flagMatch[0].length;
+		if (cmdStr[start] !== '{') return null;
+		let depth = 0;
+		let inString = false;
+		let escape = false;
+		for (let i = start; i < cmdStr.length; i++) {
+			const ch = cmdStr[i];
+			if (escape) { escape = false; continue; }
+			if (ch === '\\' && inString) { escape = true; continue; }
+			if (ch === '"') { inString = !inString; continue; }
+			if (inString) continue;
+			if (ch === '{') depth++;
+			else if (ch === '}') { depth--; if (depth === 0) return { start, end: i + 1, flagStart: flagMatch.index }; }
+		}
+		return null;
+	}
+
+	function parseInputJson(cmdStr) {
+		const range = extractInputJsonRange(cmdStr);
+		if (!range) return null;
+		const raw = cmdStr.slice(range.start, range.end);
+		try {
+			return JSON.stringify(JSON.parse(raw), null, 2);
+		} catch {
+			return raw;
+		}
+	}
+
+	function getBaseCommand(cmdStr) {
+		const range = extractInputJsonRange(cmdStr);
+		if (!range) return cmdStr;
+		// Remove from the -i flag through the end of the JSON (plus optional trailing quote)
+		let end = range.end;
+		if (cmdStr[end] === "'") end++;
+		return (cmdStr.slice(0, range.flagStart) + cmdStr.slice(end)).replace(/\s+/g, ' ').trim();
+	}
+
+	function openEditCommand(item, cmdIndex) {
+		const cmd = item.result?.commands?.[cmdIndex];
+		if (!cmd) return;
+		const fullCmd = cmd.cmd || cmd.command || '';
+		const inputJson = parseInputJson(fullCmd);
+		editingCmd = { itemName: item.name, cmdIndex, inputJson: inputJson || '{}' };
+	}
+
+	function saveEditedCommand() {
+		if (!editingCmd) return;
+		const { itemName, cmdIndex, inputJson } = editingCmd;
+
+		// Validate JSON
+		let compacted;
+		try {
+			compacted = JSON.stringify(JSON.parse(inputJson));
+		} catch {
+			editingCmd = { ...editingCmd, error: 'Invalid JSON. Please fix the syntax and try again.' };
+			return;
+		}
+
+		const updatedPlan = testPlan.map(t => {
+			if (t.name !== itemName) return t;
+			const commands = [...(t.result?.commands || [])];
+			const cmd = commands[cmdIndex];
+			if (!cmd) return t;
+
+			const replaceJson = (str) => {
+				if (!str) return str;
+				const range = extractInputJsonRange(str);
+				if (range) {
+					let end = range.end;
+					if (str[end] === "'") end++;
+					return str.slice(0, range.flagStart) + `-i ${compacted}` + str.slice(end);
+				}
+				return `${str} -i ${compacted}`;
+			};
+
+			commands[cmdIndex] = {
+				...cmd,
+				cmd: replaceJson(cmd.cmd),
+				command: replaceJson(cmd.command)
+			};
+			return { ...t, result: { commands } };
+		});
+
+		onTestPlanUpdated?.(updatedPlan);
+		editingCmd = null;
+	}
+
+	async function rerunCommand(item, cmdIndex) {
+		if (!isTauri || !Command || !resolvedAppmixerPath) return;
+		const srcCmd = item.result?.commands?.[cmdIndex];
+		if (!srcCmd) return;
+
+		const fullCmd = srcCmd.cmd || srcCmd.command || '';
+		if (!fullCmd) return;
+
+		const startTime = Date.now();
+
+		// Create a new "running" command entry and append it to the plan immediately
+		const newCommand = {
+			exitCode: null,       // null = still running
+			cmd: srcCmd.cmd,
+			command: srcCmd.command,
+			stdout: '',
+			stderr: '',
+			duration: null
+		};
+
+		const updatedPlanInit = testPlan.map(t => {
+			if (t.name !== item.name) return t;
+			return { ...t, result: { commands: [...(t.result?.commands || []), newCommand] } };
+		});
+		onTestPlanUpdated?.(updatedPlanInit);
+
+		// The new command is the last one — track its index
+		const newCmdIndex = (item.result?.commands?.length || 0);
+		const cmdKey = `${item.name}-${newCmdIndex}`;
+		runningCommand = cmdKey;
+
+		// Auto-expand the test and the new command row
+		expandedTests = new Set([...expandedTests, item.name]);
+		expandedCommands = new Set([...expandedCommands, cmdKey]);
+
+		// Scroll the new command row into view after DOM updates
+		tick().then(() => {
+			const el = document.querySelector(`[data-cmd-key="${cmdKey}"]`);
+			if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+		});
+
+		try {
+			// Quote JSON arguments for -i so the shell doesn't mangle braces
+			let shellCmd = fullCmd.replace(/^appmixer\s/, `"${resolvedAppmixerPath}" `);
+			shellCmd = shellCmd.replace(/-i\s+(\{.*\})/, (_, json) => `-i '${json}'`);
+			const execCmd = Command.create('sh', ['-l', '-c', `${shellCmd} < /dev/null 2>&1`], { env: {} });
+
+			let collectedStdout = '';
+			let collectedStderr = '';
+
+			execCmd.stdout.on('data', (line) => {
+				collectedStdout += line;
+				// Live-update the command row in the plan
+				updateRerunningCommand(item.name, newCmdIndex, { stdout: collectedStdout });
+			});
+
+			execCmd.stderr.on('data', (line) => {
+				collectedStderr += line;
+				updateRerunningCommand(item.name, newCmdIndex, { stderr: collectedStderr });
+			});
+
+			await execCmd.spawn();
+
+			// Wait for completion
+			const result = await new Promise((resolve) => {
+				execCmd.on('close', (data) => {
+					resolve({ code: data.code ?? 1 });
+				});
+			});
+
+			const duration = Date.now() - startTime;
+			const exitCode = result.code;
+
+			// Final update with exit code & duration
+			const finalPlan = testPlan.map(t => {
+				if (t.name !== item.name) return t;
+				const commands = [...(t.result?.commands || [])];
+				commands[newCmdIndex] = {
+					...commands[newCmdIndex],
+					exitCode,
+					stdout: collectedStdout,
+					stderr: collectedStderr,
+					duration
+				};
+				return {
+					...t,
+					completed: true,
+					status: exitCode === 0 ? 'passed' : 'failed',
+					result: { commands },
+					reason: exitCode !== 0 ? `Exit code ${exitCode}` : null,
+					description: exitCode !== 0 ? stripAnsi(collectedStdout || collectedStderr || '').slice(0, 500) : null
+				};
+			});
+			onTestPlanUpdated?.(finalPlan);
+		} catch (err) {
+			// Mark the command as failed
+			updateRerunningCommand(item.name, newCmdIndex, {
+				exitCode: 1,
+				stderr: `Error: ${err}`,
+				duration: Date.now() - startTime
+			});
+			console.error(`Failed to rerun command:`, err);
+		} finally {
+			runningCommand = null;
+		}
+	}
+
+	/** Helper: live-update a command entry while it's running */
+	function updateRerunningCommand(testName, cmdIdx, updates) {
+		const updatedPlan = testPlan.map(t => {
+			if (t.name !== testName) return t;
+			const commands = [...(t.result?.commands || [])];
+			if (commands[cmdIdx]) {
+				commands[cmdIdx] = { ...commands[cmdIdx], ...updates };
+			}
+			return { ...t, result: { commands } };
+		});
+		onTestPlanUpdated?.(updatedPlan);
+	}
+
+	/**
+	 * Delete a single command from a test item's history.
+	 */
+	function deleteCommand(item, cmdIndex) {
+		const updatedPlan = testPlan.map(t => {
+			if (t.name !== item.name) return t;
+			const commands = [...(t.result?.commands || [])];
+			commands.splice(cmdIndex, 1);
+
+			// Recalculate status based on remaining commands
+			if (commands.length === 0) {
+				return { ...t, completed: false, status: null, result: { commands }, reason: null, description: null };
+			}
+			const lastCmd = commands[commands.length - 1];
+			const lastPassed = lastCmd.exitCode === 0;
+			return {
+				...t,
+				completed: true,
+				status: lastPassed ? 'passed' : 'failed',
+				result: { commands },
+				reason: lastPassed ? null : `Exit code ${lastCmd.exitCode}`,
+				description: lastPassed ? null : stripAnsi(lastCmd.stdout || lastCmd.stderr || '').slice(0, 500)
+			};
+		});
+		onTestPlanUpdated?.(updatedPlan);
+	}
+
 	// ── AI Test Agent ─────────────────────────────────────────────────
-	let aiTestRunning = $state<string | null>(null); // component name currently being AI-tested
+	let aiTestRunning = $state(null); // component name currently being AI-tested
 	let aiTestOutput = $state('');
-	let aiTestChildPid = $state<number | null>(null);
+	let aiTestChildPid = $state(null);
 	let aiTestShowOutput = $state(false);
-	let resolvedNodePath = $state<string | null>(null);
-	let resolvedCliDir = $state<string | null>(null);
+	let resolvedNodePath = $state(null);
+	let resolvedCliDir = $state(null);
 
 	// Resolve node and appmixer-cli paths on mount
 	if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
@@ -304,7 +535,7 @@
 	 * Derive the connectors root directory from connectorsDir.
 	 * connectorsDir points to <root>/src/appmixer/ — the agent expects <root>.
 	 */
-	function getConnectorsRootDir(): string {
+	function getConnectorsRootDir() {
 		// If connectorsDir ends with src/appmixer or src/appmixer/, strip it
 		let dir = connectorsDir.replace(/\/+$/, '');
 		if (dir.endsWith('/src/appmixer')) {
@@ -313,7 +544,7 @@
 		return dir;
 	}
 
-	async function runAiTest(componentName: string) {
+	async function runAiTest(componentName) {
 		if (!isTauri || !Command || !resolvedNodePath) return;
 
 		aiTestRunning = componentName;
@@ -346,7 +577,7 @@
 			const cmd = Command.create('sh', args, { env: {} });
 			let output = '';
 
-			cmd.stdout.on('data', (line: string) => {
+			cmd.stdout.on('data', (line) => {
 				const trimmed = line.replace(/\n+$/, '');
 				if (trimmed) {
 					output += trimmed + '\n';
@@ -354,7 +585,7 @@
 				}
 			});
 
-			cmd.stderr.on('data', (line: string) => {
+			cmd.stderr.on('data', (line) => {
 				const trimmed = line.replace(/\n+$/, '');
 				if (trimmed) {
 					output += '[stderr] ' + trimmed + '\n';
@@ -366,7 +597,7 @@
 			aiTestChildPid = child.pid;
 
 			// Wait for the process to finish
-			cmd.on('close', (data: { code: number | null }) => {
+			cmd.on('close', (data) => {
 				const exitCode = data.code ?? 1;
 				const exitLine = `\n[AI-TEST] Process exited with code ${exitCode}\n`;
 				aiTestOutput += exitLine;
@@ -381,7 +612,7 @@
 				}
 			});
 
-			cmd.on('error', (err: string) => {
+			cmd.on('error', (err) => {
 				aiTestOutput += `\n[AI-TEST] Error: ${err}\n`;
 				aiTestRunning = null;
 				aiTestChildPid = null;
@@ -407,7 +638,7 @@
 		}
 	}
 
-	async function getScriptPath(): Promise<string | null> {
+	async function getScriptPath() {
 		if (!Command) return null;
 		// Try to find the script relative to the app
 		// In dev, it's at the project root scripts/run-ai-test.mjs
@@ -442,7 +673,7 @@
 	}
 
 	// Auto-scroll directive: scrolls element to bottom whenever the bound value changes
-	function autoScroll(node: HTMLElement, _value: string) {
+	function autoScroll(node, _value) {
 		node.scrollTop = node.scrollHeight;
 		return {
 			update() {
@@ -458,7 +689,7 @@
 
 	let aiPanelHeight = $state(AI_PANEL_DEFAULT);
 	let isResizing = $state(false);
-	let aiPopupWindow = $state<Window | null>(null);
+	let aiPopupWindow = $state(null);
 
 	// Restore saved height
 	if (typeof window !== 'undefined') {
@@ -468,13 +699,13 @@
 		} catch { /* ignore */ }
 	}
 
-	function onResizeStart(e: MouseEvent) {
+	function onResizeStart(e) {
 		e.preventDefault();
 		isResizing = true;
 		const startY = e.clientY;
 		const startHeight = aiPanelHeight;
 
-		function onMove(ev: MouseEvent) {
+		function onMove(ev) {
 			const delta = startY - ev.clientY;
 			aiPanelHeight = Math.max(AI_PANEL_MIN, startHeight + delta);
 		}
@@ -526,7 +757,7 @@
 		});
 	}
 
-	function getPopupHtml(): string {
+	function getPopupHtml() {
 		// Note: we split closing tags to avoid Svelte parser issues
 		const closeStyle = '<' + '/style>';
 		const closeScript = '<' + '/script>';
@@ -575,34 +806,71 @@
 		}
 	}
 
-	let authStatus = $state<'idle' | 'checking' | 'valid' | 'invalid'>('idle');
+	// Auth status: 'checking' | 'valid' | 'invalid' | 'refreshing' | 'needs-auth'
+	let authStatus = $state('checking');
 
-	async function refreshAuth() {
-		if (!isTauri || !Command || !resolvedAppmixerPath) return;
+	/**
+	 * Validate the auth token by calling `appmixer test auth validate`.
+	 * If validation fails, automatically attempt a refresh.
+	 */
+	async function validateAuth() {
+		if (!isTauri || !Command || !resolvedAppmixerPath) {
+			authStatus = 'needs-auth';
+			return;
+		}
 
 		authStatus = 'checking';
 		try {
 			const authPath = `${connectorsDir}/${connectorName}/auth.js`;
 			const cmd = Command.create('sh', [
-				'-c',
+				'-l', '-c',
+				`"${resolvedAppmixerPath}" test auth validate "${authPath}" < /dev/null 2>&1`
+			], { env: {} });
+
+			const result = await cmd.execute();
+			if (result.code === 0) {
+				authStatus = 'valid';
+			} else {
+				console.warn(`Auth validation failed for ${connectorName}, attempting refresh…`, result.stdout);
+				// Validation failed — try refresh automatically
+				await refreshAuth();
+			}
+		} catch (err) {
+			console.error('Auth validation failed:', err);
+			authStatus = 'invalid';
+		}
+	}
+
+	async function refreshAuth() {
+		if (!isTauri || !Command || !resolvedAppmixerPath) return;
+
+		authStatus = 'refreshing';
+		try {
+			const authPath = `${connectorsDir}/${connectorName}/auth.js`;
+			const cmd = Command.create('sh', [
+				'-l', '-c',
 				`"${resolvedAppmixerPath}" test auth refresh "${authPath}" < /dev/null 2>&1`
 			], { env: {} });
 
 			const result = await cmd.execute();
-			authStatus = result.code === 0 ? 'valid' : 'invalid';
-
-			if (result.code !== 0) {
+			if (result.code === 0) {
+				authStatus = 'valid';
+			} else {
+				authStatus = 'invalid';
 				console.warn(`Auth refresh failed for ${connectorName}:`, result.stdout, result.stderr);
 			}
-
-			// Reset status after a few seconds
-			setTimeout(() => { authStatus = 'idle'; }, 4000);
 		} catch (err) {
 			authStatus = 'invalid';
 			console.error('Auth refresh failed:', err);
-			setTimeout(() => { authStatus = 'idle'; }, 4000);
 		}
 	}
+
+	// Auto-validate auth when the component mounts and shell is available
+	$effect(() => {
+		if (isTauri && Command && resolvedAppmixerPath && connectorName && connectorsDir) {
+			validateAuth();
+		}
+	});
 </script>
 
 <div class="test-plan-viewer">
@@ -616,19 +884,22 @@
 		<div class="tp-header-right">
 			{#if isTauri}
 				<Button
-					variant={authStatus === 'valid' ? 'outline' : authStatus === 'invalid' ? 'destructive' : 'outline'}
+					variant={authStatus === 'valid' ? 'outline' : authStatus === 'invalid' || authStatus === 'needs-auth' ? 'destructive' : 'outline'}
 					size="sm"
-					onclick={refreshAuth}
-					disabled={authStatus === 'checking' || !resolvedAppmixerPath}
-					title="Refresh authentication"
+					onclick={validateAuth}
+					disabled={authStatus === 'checking' || authStatus === 'refreshing' || !resolvedAppmixerPath}
+					title={authStatus === 'invalid' || authStatus === 'needs-auth' ? 'Click to retry auth validation & refresh' : 'Validate authentication'}
 				>
 					{#if authStatus === 'checking'}
+						<Loader2 class="h-3.5 w-3.5 mr-1 spinning" />
+						Validating...
+					{:else if authStatus === 'refreshing'}
 						<Loader2 class="h-3.5 w-3.5 mr-1 spinning" />
 						Refreshing...
 					{:else if authStatus === 'valid'}
 						<CheckCircle2 class="h-3.5 w-3.5 mr-1" />
 						Auth OK
-					{:else if authStatus === 'invalid'}
+					{:else if authStatus === 'invalid' || authStatus === 'needs-auth'}
 						<XCircle class="h-3.5 w-3.5 mr-1" />
 						Auth Failed
 					{:else}
@@ -639,14 +910,15 @@
 				<Button
 					variant="default"
 					size="sm"
-					onclick={runAllTests}
-					disabled={runningAll || !resolvedAppmixerPath}
+					onclick={runAllAiTests}
+					disabled={runningAll || aiTestRunning !== null || !resolvedNodePath || authStatus === 'invalid' || authStatus === 'needs-auth'}
+					title={authStatus === 'invalid' || authStatus === 'needs-auth' ? 'Auth required — validate auth first' : 'Run all AI tests'}
 				>
 					{#if runningAll}
 						<Loader2 class="h-3.5 w-3.5 mr-1 spinning" />
-						Running...
+						Running All...
 					{:else}
-						<Play class="h-3.5 w-3.5 mr-1" />
+						<Bot class="h-3.5 w-3.5 mr-1" />
 						Run All
 					{/if}
 				</Button>
@@ -806,9 +1078,9 @@
 									variant="ghost"
 									size="sm"
 									class="tp-run-btn"
-									onclick={(e: MouseEvent) => { e.stopPropagation(); runSingleTest(item); }}
-									disabled={isRunning || !resolvedAppmixerPath}
-									title="Run test"
+									onclick={(e) => { e.stopPropagation(); runSingleTest(item); }}
+									disabled={isRunning || !resolvedAppmixerPath || authStatus === 'invalid' || authStatus === 'needs-auth'}
+									title={authStatus === 'invalid' || authStatus === 'needs-auth' ? 'Auth required — validate auth first' : 'Run test'}
 								>
 									{#if isRunning}
 										<Loader2 class="h-3.5 w-3.5 spinning" />
@@ -820,9 +1092,9 @@
 									variant="ghost"
 									size="sm"
 									class="tp-run-btn tp-ai-btn"
-									onclick={(e: MouseEvent) => { e.stopPropagation(); runAiTest(item.name); }}
-									disabled={aiTestRunning !== null || !resolvedNodePath}
-									title="Run AI-powered test (LangGraph agent)"
+									onclick={(e) => { e.stopPropagation(); runAiTest(item.name); }}
+									disabled={aiTestRunning !== null || !resolvedNodePath || authStatus === 'invalid' || authStatus === 'needs-auth'}
+									title={authStatus === 'invalid' || authStatus === 'needs-auth' ? 'Auth required — validate auth first' : 'Run AI-powered test (LangGraph agent)'}
 								>
 									{#if aiTestRunning === item.name}
 										<Loader2 class="h-3.5 w-3.5 spinning" />
@@ -856,7 +1128,8 @@
 									{#each item.result.commands as cmd, ci}
 										{@const cmdKey = `${item.name}-${ci}`}
 										{@const isCmdExpanded = expandedCommands.has(cmdKey)}
-										<div class="tp-cmd {cmd.exitCode === 0 ? 'success' : 'error'}">
+										{@const isRunningCmd = cmd.exitCode === null}
+										<div class="tp-cmd {isRunningCmd ? 'running' : cmd.exitCode === 0 ? 'success' : 'error'}" data-cmd-key={cmdKey}>
 											<button class="tp-cmd-header" onclick={() => toggleCommand(cmdKey)}>
 												<div class="tp-cmd-left">
 													{#if isCmdExpanded}
@@ -864,31 +1137,75 @@
 													{:else}
 														<ChevronRight class="h-3 w-3" />
 													{/if}
-													<span class="tp-cmd-exit {cmd.exitCode === 0 ? 'success' : 'error'}">
-														{cmd.exitCode === 0 ? '✓' : '✗'}
-													</span>
+													{#if isRunningCmd}
+														<Loader2 class="h-3 w-3 spinning tp-cmd-running-icon" />
+													{:else}
+														<span class="tp-cmd-exit {cmd.exitCode === 0 ? 'success' : 'error'}">
+															{cmd.exitCode === 0 ? '✓' : '✗'}
+														</span>
+													{/if}
 													<code class="tp-cmd-text">{getDisplayCommand(cmd)}</code>
 												</div>
 												<div class="tp-cmd-right">
-													{#if cmd.duration}
-														<span class="tp-cmd-duration">{formatDuration(cmd.duration)}</span>
+													{#if isRunningCmd}
+														<Badge variant="secondary" class="tp-status-badge">running…</Badge>
+													{:else}
+														{#if cmd.duration}
+															<span class="tp-cmd-duration">{formatDuration(cmd.duration)}</span>
+														{/if}
+														<span class="tp-cmd-exit-code">exit {cmd.exitCode}</span>
 													{/if}
-													<span class="tp-cmd-exit-code">exit {cmd.exitCode}</span>
-												</div>
-											</button>
+												{#if isTauri}
+													<button
+														class="tp-cmd-action"
+														onclick={(e) => { e.stopPropagation(); rerunCommand(item, ci); }}
+														disabled={runningCommand !== null || isRunningCmd || authStatus === 'invalid' || authStatus === 'needs-auth'}
+														title={authStatus === 'invalid' || authStatus === 'needs-auth' ? 'Auth required — validate auth first' : 'Re-run this command'}
+													>
+														{#if runningCommand === cmdKey}
+															<Loader2 class="h-3 w-3 spinning" />
+														{:else}
+															<RotateCw class="h-3 w-3" />
+														{/if}
+													</button>
+													<button
+														class="tp-cmd-action"
+														onclick={(e) => { e.stopPropagation(); openEditCommand(item, ci); }}
+														disabled={isRunningCmd}
+														title="Edit -i input JSON"
+													>
+														<Pencil class="h-3 w-3" />
+													</button>
+													<button
+														class="tp-cmd-action tp-cmd-delete"
+														onclick={(e) => { e.stopPropagation(); deleteCommand(item, ci); }}
+														disabled={isRunningCmd}
+														title="Remove this command"
+													>
+														<Trash2 class="h-3 w-3" />
+													</button>
+												{/if}
+											</div>
+										</button>
 
-											{#if isCmdExpanded}
+											{#if isCmdExpanded || isRunningCmd}
 												<div class="tp-cmd-output">
 													{#if cmd.stdout}
 														<div class="tp-output-section">
 															<div class="tp-output-label">stdout</div>
-															<pre class="tp-output-pre">{extractOutput(cmd.stdout)}</pre>
+															<pre class="tp-output-pre" use:autoScroll={cmd.stdout}>{extractOutput(cmd.stdout)}</pre>
 														</div>
 													{/if}
 													{#if cmd.stderr}
 														<div class="tp-output-section">
 															<div class="tp-output-label stderr">stderr</div>
-															<pre class="tp-output-pre stderr">{stripAnsi(cmd.stderr)}</pre>
+															<pre class="tp-output-pre stderr" use:autoScroll={cmd.stderr}>{stripAnsi(cmd.stderr)}</pre>
+														</div>
+													{/if}
+													{#if isRunningCmd && !cmd.stdout && !cmd.stderr}
+														<div class="tp-cmd-waiting">
+															<Loader2 class="h-3.5 w-3.5 spinning" />
+															<span>Waiting for output…</span>
 														</div>
 													{/if}
 												</div>
@@ -906,6 +1223,41 @@
 		{/if}
 	</div>
 </div>
+
+<!-- Edit Command Modal -->
+{#if editingCmd}
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="tp-modal-overlay" onclick={() => editingCmd = null}>
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div class="tp-modal" onclick={(e) => e.stopPropagation()}>
+			<div class="tp-modal-header">
+				<span class="tp-modal-title">Edit Command Input</span>
+				<button class="tp-modal-close" onclick={() => editingCmd = null}>&times;</button>
+			</div>
+			<div class="tp-modal-body">
+				<label class="tp-modal-label">Base command</label>
+				<code class="tp-modal-base-cmd">{getBaseCommand(
+					testPlan.find(t => t.name === editingCmd.itemName)?.result?.commands?.[editingCmd.cmdIndex]?.command ||
+					testPlan.find(t => t.name === editingCmd.itemName)?.result?.commands?.[editingCmd.cmdIndex]?.cmd || ''
+				)}</code>
+				{#if editingCmd.error}
+					<div class="tp-modal-error">{editingCmd.error}</div>
+				{/if}
+				<label class="tp-modal-label">-i JSON input</label>
+				<textarea
+					class="tp-modal-textarea"
+					rows="16"
+					bind:value={editingCmd.inputJson}
+					spellcheck="false"
+				></textarea>
+			</div>
+			<div class="tp-modal-footer">
+				<button class="tp-modal-btn tp-modal-btn-cancel" onclick={() => editingCmd = null}>Cancel</button>
+				<button class="tp-modal-btn tp-modal-btn-save" onclick={saveEditedCommand}>Save</button>
+			</div>
+		</div>
+	</div>
+{/if}
 
 <style>
 	.test-plan-viewer {
@@ -1161,6 +1513,10 @@
 		border-left: 3px solid #ef4444;
 	}
 
+	.tp-cmd.running {
+		border-left: 3px solid #3b82f6;
+	}
+
 	.tp-cmd-header {
 		display: flex;
 		align-items: center;
@@ -1255,7 +1611,6 @@
 		margin: 0;
 		white-space: pre-wrap;
 		word-break: break-word;
-		max-height: 300px;
 		overflow-y: auto;
 		background: #0d1117;
 		color: #c9d1d9;
@@ -1271,6 +1626,41 @@
 		color: var(--color-muted-foreground);
 		font-style: italic;
 		padding: 8px 0;
+	}
+
+	/* Command action buttons (rerun / delete) */
+	.tp-cmd-action {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 20px;
+		height: 20px;
+		border: none;
+		background: transparent;
+		cursor: pointer;
+		border-radius: var(--radius-sm);
+		color: var(--color-muted-foreground);
+		opacity: 0;
+		transition: opacity 0.15s, color 0.15s, background 0.15s;
+	}
+
+	.tp-cmd-header:hover .tp-cmd-action {
+		opacity: 1;
+	}
+
+	.tp-cmd-action:hover {
+		background: var(--color-muted);
+		color: var(--color-foreground);
+	}
+
+	.tp-cmd-action.tp-cmd-delete:hover {
+		color: #ef4444;
+		background: #fef2f2;
+	}
+
+	.tp-cmd-action:disabled {
+		opacity: 0.5;
+		cursor: default;
 	}
 
 	/* AI Test Button */
@@ -1380,6 +1770,23 @@
 		flex: 1;
 	}
 
+	:global(.tp-cmd-running-icon) {
+		color: #3b82f6;
+	}
+
+	.tp-cmd-waiting {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 12px 8px;
+		color: var(--color-muted-foreground);
+		font-size: 11px;
+	}
+
+	.tp-cmd-waiting :global(svg) {
+		color: #3b82f6;
+	}
+
 	:global(.spinning) {
 		animation: spin 1s linear infinite;
 	}
@@ -1387,5 +1794,150 @@
 	@keyframes spin {
 		from { transform: rotate(0deg); }
 		to { transform: rotate(360deg); }
+	}
+
+	/* Edit Command Modal */
+	.tp-modal-overlay {
+		position: fixed;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.5);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		z-index: 1000;
+	}
+
+	.tp-modal {
+		background: var(--color-card, #fff);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-lg, 8px);
+		width: 560px;
+		max-width: 90vw;
+		max-height: 85vh;
+		display: flex;
+		flex-direction: column;
+		box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+	}
+
+	.tp-modal-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 12px 16px;
+		border-bottom: 1px solid var(--color-border);
+	}
+
+	.tp-modal-title {
+		font-size: 14px;
+		font-weight: 600;
+	}
+
+	.tp-modal-close {
+		background: none;
+		border: none;
+		font-size: 20px;
+		cursor: pointer;
+		color: var(--color-muted-foreground);
+		padding: 0 4px;
+		line-height: 1;
+	}
+
+	.tp-modal-close:hover {
+		color: var(--color-foreground);
+	}
+
+	.tp-modal-body {
+		padding: 16px;
+		overflow-y: auto;
+		flex: 1;
+	}
+
+	.tp-modal-error {
+		font-size: 12px;
+		color: #ef4444;
+		background: #fef2f2;
+		border: 1px solid #fecaca;
+		border-radius: var(--radius-sm, 4px);
+		padding: 6px 10px;
+		margin-bottom: 8px;
+	}
+
+	.tp-modal-label {
+		display: block;
+		font-size: 11px;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--color-muted-foreground);
+		margin-bottom: 4px;
+	}
+
+	.tp-modal-base-cmd {
+		display: block;
+		font-family: monospace;
+		font-size: 11px;
+		padding: 6px 8px;
+		background: var(--color-muted);
+		border-radius: var(--radius-sm, 4px);
+		margin-bottom: 12px;
+		word-break: break-all;
+		color: var(--color-muted-foreground);
+	}
+
+	.tp-modal-textarea {
+		width: 100%;
+		font-family: "SF Mono", "Fira Code", monospace;
+		font-size: 12px;
+		line-height: 1.5;
+		padding: 8px;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm, 4px);
+		background: #0d1117;
+		color: #c9d1d9;
+		resize: vertical;
+		box-sizing: border-box;
+	}
+
+	.tp-modal-textarea:focus {
+		outline: none;
+		border-color: #3b82f6;
+		box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+	}
+
+	.tp-modal-footer {
+		display: flex;
+		justify-content: flex-end;
+		gap: 8px;
+		padding: 12px 16px;
+		border-top: 1px solid var(--color-border);
+	}
+
+	.tp-modal-btn {
+		padding: 6px 16px;
+		border-radius: var(--radius-sm, 4px);
+		font-size: 12px;
+		font-weight: 500;
+		cursor: pointer;
+		border: 1px solid var(--color-border);
+	}
+
+	.tp-modal-btn-cancel {
+		background: transparent;
+		color: var(--color-foreground);
+	}
+
+	.tp-modal-btn-cancel:hover {
+		background: var(--color-muted);
+	}
+
+	.tp-modal-btn-save {
+		background: #3b82f6;
+		color: white;
+		border-color: #3b82f6;
+	}
+
+	.tp-modal-btn-save:hover {
+		background: #2563eb;
+		border-color: #2563eb;
 	}
 </style>

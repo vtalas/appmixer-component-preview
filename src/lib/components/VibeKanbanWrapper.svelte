@@ -1,9 +1,9 @@
-<script lang="ts">
+<script>
 	import { onMount, onDestroy } from 'svelte';
 	import { browser } from '$app/environment';
 
-	let container: HTMLDivElement;
-	let root: any = null;
+	let container;
+	let root = null;
 
 	onMount(async () => {
 		if (!browser) return;
