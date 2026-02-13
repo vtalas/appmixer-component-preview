@@ -72,6 +72,25 @@ function createFileSyncStore() {
 		return !SKIP_DIRS.has(name);
 	}
 
+	async function tauriFindFile(dirPath, fileName, depth = 0, maxDepth = 4) {
+		if (depth > maxDepth) return null;
+		try {
+			const entries = await tauriReadDir(dirPath);
+			for (const entry of entries) {
+				if (!entry.isDirectory && entry.name === fileName) {
+					return `${dirPath}/${entry.name}`;
+				}
+			}
+			for (const entry of entries) {
+				if (entry.isDirectory && shouldScanDir(entry.name)) {
+					const found = await tauriFindFile(`${dirPath}/${entry.name}`, fileName, depth + 1, maxDepth);
+					if (found) return found;
+				}
+			}
+		} catch { /* ignore */ }
+		return null;
+	}
+
 	async function scanWithTauri(basePath) {
 		state.isLoading = true;
 		state.error = null;
@@ -260,6 +279,10 @@ function createFileSyncStore() {
 		},
 		set tree(value) {
 			tree = value;
+		},
+
+		get isTauri() {
+			return isTauri;
 		},
 
 		get isSupported() {
@@ -614,6 +637,25 @@ function createFileSyncStore() {
 			} catch (err) {
 				console.warn('Failed to restore last connectors folder:', err);
 				return false;
+			}
+		},
+
+		async getAuthInfo(connectorName) {
+			if (!isTauri || !state.directoryPath) return { found: false };
+
+			const connectorPath = `${state.directoryPath}/${connectorName}`;
+			const authJsPath = await tauriFindFile(connectorPath, 'auth.js');
+
+			if (!authJsPath) return { found: false, authType: null, fullPath: null };
+
+			try {
+				const content = await tauriReadTextFile(authJsPath);
+				const typeMatch = content.match(/type:\s*['"](\w+)['"]/);
+				const authType = typeMatch ? typeMatch[1] : null;
+
+				return { found: true, authType, fullPath: authJsPath };
+			} catch {
+				return { found: false, authType: null, fullPath: null };
 			}
 		},
 
