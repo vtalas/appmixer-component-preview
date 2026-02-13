@@ -3,7 +3,7 @@
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
 	import * as Collapsible from '$lib/components/ui/collapsible';
 	import { Badge } from '$lib/components/ui/badge';
-	import { ChevronRight, Search, Package, Folder, Box, X, Save, AlertCircle, FolderSync, Circle, RotateCw, Loader2, MessageSquare, FlaskConical } from 'lucide-svelte';
+	import { ChevronRight, Search, Package, Folder, Box, X, Save, AlertCircle, FolderSync, Circle, RotateCw, Loader2, MessageSquare, FlaskConical, Sparkles } from 'lucide-svelte';
 	import { Button } from '$lib/components/ui/button';
 	import ComponentPreview from '$lib/components/ComponentPreview.svelte';
 	import AiChatPanel from '$lib/components/AiChatPanel.svelte';
@@ -22,6 +22,9 @@
 	let testPlanData = $state(null);
 	let testPlanLoading = $state(false);
 	let testPlanConnector = $state(null);
+	let planningRunning = $state(false);
+	let planningOutput = $state('');
+	let planningError = $state(null);
 
 	// Use the file sync store's tree instead of static data
 	let currentTree = $derived(fileSync.tree);
@@ -467,6 +470,103 @@
 		}
 	}
 
+	async function generateTestPlan() {
+		if (planningRunning || !activeConnectorName || !fileSync.isConnected) return;
+
+		planningRunning = true;
+		planningOutput = '';
+		planningError = null;
+
+		try {
+			const { Command } = await import('@tauri-apps/plugin-shell');
+
+			// Resolve node path
+			const whichNode = Command.create('sh', ['-l', '-c', 'which node'], { env: {} });
+			const nodeResult = await whichNode.execute();
+			const nodePath = nodeResult.stdout.trim();
+			if (!nodePath) throw new Error('Could not find node');
+
+			// Resolve CLI dir
+			const npmRoot = Command.create('sh', ['-l', '-c', 'npm root -g'], { env: {} });
+			const npmResult = await npmRoot.execute();
+			const cliDir = npmResult.stdout.trim() ? `${npmResult.stdout.trim()}/appmixer` : null;
+
+			// Find run-planning.mjs script
+			const findCmd = Command.create('sh', ['-l', '-c',
+				`for p in scripts/run-planning.mjs ../scripts/run-planning.mjs; do [ -f "$p" ] && echo "$(cd "$(dirname "$p")" && pwd)/$(basename "$p")" && exit 0; done; echo ""`
+			], { env: {} });
+			const findResult = await findCmd.execute();
+			let scriptPath = findResult.stdout.trim();
+			if (!scriptPath) {
+				const pwdCmd = Command.create('sh', ['-l', '-c', 'echo $PWD'], { env: {} });
+				const pwdResult = await pwdCmd.execute();
+				scriptPath = `${pwdResult.stdout.trim()}/scripts/run-planning.mjs`;
+			}
+
+			// Compute connectorsRootDir by stripping /src/appmixer
+			let connectorsRootDir = (fileSync.directoryPath || '').replace(/\/+$/, '');
+			if (connectorsRootDir.endsWith('/src/appmixer')) {
+				connectorsRootDir = connectorsRootDir.slice(0, -'/src/appmixer'.length);
+			}
+
+			const args = [
+				'-l', '-c',
+				[
+					`"${nodePath}"`,
+					`"${scriptPath}"`,
+					`--connectorsDir "${connectorsRootDir}"`,
+					`--connector "${activeConnectorName}"`,
+					cliDir ? `--cliDir "${cliDir}"` : '',
+					'< /dev/null 2>&1'
+				].filter(Boolean).join(' ')
+			];
+
+			const cmd = Command.create('sh', args, { env: {} });
+			let output = '';
+
+			cmd.stdout.on('data', (line) => {
+				const trimmed = line.replace(/\n+$/, '');
+				if (trimmed) {
+					output += trimmed + '\n';
+					planningOutput = output;
+				}
+			});
+
+			cmd.stderr.on('data', (line) => {
+				const trimmed = line.replace(/\n+$/, '');
+				if (trimmed) {
+					output += '[stderr] ' + trimmed + '\n';
+					planningOutput = output;
+				}
+			});
+
+			await cmd.spawn();
+
+			cmd.on('close', async (data) => {
+				const exitCode = data.code ?? 1;
+				planningOutput += `\n[PLANNING] Process exited with code ${exitCode}\n`;
+				planningRunning = false;
+
+				if (exitCode === 0) {
+					await handleReloadTestPlan();
+					activeTab = 'testplan';
+				} else {
+					planningError = `Planning agent exited with code ${exitCode}`;
+				}
+			});
+
+			cmd.on('error', (err) => {
+				planningOutput += `\n[PLANNING] Error: ${err}\n`;
+				planningError = String(err);
+				planningRunning = false;
+			});
+		} catch (err) {
+			planningOutput += `\nFailed to spawn planning agent: ${err}\n`;
+			planningError = String(err);
+			planningRunning = false;
+		}
+	}
+
 	// Auto-load test plan when connector changes.
 	// Use $derived for the connector name so the effect only re-runs when
 	// the connector actually changes — not on every selectedComponent mutation.
@@ -783,7 +883,7 @@
 				</div>
 
 				<!-- Tabs: Properties / Test Plan -->
-				{#if testPlanData}
+				{#if testPlanData || (!testPlanData && fileSync.isConnected && activeConnectorName)}
 					<div class="editor-tabs">
 						<button
 							class="editor-tab {activeTab === 'properties' ? 'active' : ''}"
@@ -792,20 +892,39 @@
 							<Package class="h-3.5 w-3.5" />
 							Properties
 						</button>
-						<button
-							class="editor-tab {activeTab === 'testplan' ? 'active' : ''}"
-							onclick={() => activeTab = 'testplan'}
-						>
-							<FlaskConical class="h-3.5 w-3.5" />
-							Test Plan
-							{#if testPlanStats.passed > 0 || testPlanStats.failed > 0}
-								<span class="tab-stats">
-									{#if testPlanStats.passed > 0}<span class="tab-passed">{testPlanStats.passed}</span>{/if}
-									{#if testPlanStats.failed > 0}<span class="tab-failed">{testPlanStats.failed}</span>{/if}
-									/ {testPlanStats.total}
-								</span>
-							{/if}
-						</button>
+						{#if testPlanData}
+							<button
+								class="editor-tab {activeTab === 'testplan' ? 'active' : ''}"
+								onclick={() => activeTab = 'testplan'}
+							>
+								<FlaskConical class="h-3.5 w-3.5" />
+								Test Plan
+								{#if testPlanStats.passed > 0 || testPlanStats.failed > 0}
+									<span class="tab-stats">
+										{#if testPlanStats.passed > 0}<span class="tab-passed">{testPlanStats.passed}</span>{/if}
+										{#if testPlanStats.failed > 0}<span class="tab-failed">{testPlanStats.failed}</span>{/if}
+										/ {testPlanStats.total}
+									</span>
+								{/if}
+							</button>
+						{:else if !testPlanData && fileSync.isConnected && activeConnectorName}
+							<button
+								class="editor-tab generate-tab"
+								onclick={generateTestPlan}
+								disabled={planningRunning || testPlanLoading}
+							>
+								{#if planningRunning}
+									<Loader2 class="h-3.5 w-3.5 spinning" />
+									Generating...
+								{:else if testPlanLoading}
+									<Loader2 class="h-3.5 w-3.5 spinning" />
+									Loading...
+								{:else}
+									<Sparkles class="h-3.5 w-3.5" />
+									Generate Test Plan
+								{/if}
+							</button>
+						{/if}
 					</div>
 				{/if}
 
@@ -831,6 +950,38 @@
 									onTestPlanUpdated={handleTestPlanUpdated}
 									onReloadTestPlan={handleReloadTestPlan}
 								/>
+							</div>
+						{/if}
+
+						{#if planningRunning || planningOutput}
+							<div class="planning-output-panel">
+								<div class="planning-output-header">
+									<div class="planning-output-title">
+										<Sparkles class="h-3.5 w-3.5" />
+										<span>Planning Agent</span>
+										{#if planningRunning}
+											<span class="planning-badge running">
+												<Loader2 class="h-3 w-3 spinning" />
+												running
+											</span>
+										{:else}
+											<span class="planning-badge done">done</span>
+										{/if}
+									</div>
+									{#if !planningRunning}
+										<button
+											class="planning-close-btn"
+											onclick={() => { planningOutput = ''; planningError = null; }}
+											title="Close"
+										>
+											<X class="h-3.5 w-3.5" />
+										</button>
+									{/if}
+								</div>
+								<pre class="planning-output-pre">{planningOutput}</pre>
+								{#if planningError}
+									<div class="planning-error">{planningError}</div>
+								{/if}
 							</div>
 						{/if}
 					</div>
@@ -1164,12 +1315,14 @@
 		flex: 1;
 		display: flex;
 		overflow: hidden;
+		min-height: 0;
 	}
 
 	.editor-body {
 		flex: 1;
 		overflow: auto;
 		padding: 20px;
+		min-height: 0;
 	}
 
 	/* Editor Tabs */
@@ -1226,6 +1379,7 @@
 		height: 100%;
 		display: flex;
 		flex-direction: column;
+		min-height: 0;
 	}
 
 	.ai-panel {
@@ -1321,5 +1475,118 @@
 		margin-top: 8px !important;
 		opacity: 0.7;
 		max-width: 200px;
+	}
+
+	/* Generate Test Plan tab */
+	.editor-tab.generate-tab {
+		color: #8b5cf6;
+		border-bottom-color: transparent;
+	}
+
+	.editor-tab.generate-tab:hover {
+		color: #7c3aed;
+		background: rgba(139, 92, 246, 0.08);
+	}
+
+	.editor-tab.generate-tab:disabled {
+		opacity: 0.6;
+		cursor: default;
+	}
+
+	:global(.editor-tab.generate-tab .spinning) {
+		animation: spin 1s linear infinite;
+	}
+
+	/* Planning Output Panel */
+	.planning-output-panel {
+		margin-top: 16px;
+		border-radius: var(--radius-md);
+		overflow: hidden;
+		background: #0d1117;
+		border: 1px solid #30363d;
+	}
+
+	.planning-output-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 6px 10px;
+		background: #161b22;
+		border-bottom: 1px solid #30363d;
+	}
+
+	.planning-output-title {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 11px;
+		font-weight: 600;
+		color: #c9d1d9;
+	}
+
+	.planning-output-title :global(svg) {
+		color: #8b5cf6;
+	}
+
+	.planning-badge {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		font-size: 9px;
+		font-weight: 500;
+		padding: 1px 6px;
+		border-radius: 4px;
+		margin-left: 4px;
+	}
+
+	.planning-badge.running {
+		background: #21262d;
+		border: 1px solid #30363d;
+		color: #f59e0b;
+	}
+
+	.planning-badge.done {
+		background: #21262d;
+		border: 1px solid #30363d;
+		color: #8b949e;
+	}
+
+	.planning-close-btn {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 22px;
+		height: 22px;
+		border: none;
+		background: transparent;
+		cursor: pointer;
+		border-radius: var(--radius-sm);
+		color: #8b949e;
+	}
+
+	.planning-close-btn:hover {
+		background: #21262d;
+		color: #c9d1d9;
+	}
+
+	.planning-output-pre {
+		font-family: "SF Mono", "Fira Code", monospace;
+		font-size: 10px;
+		line-height: 1.5;
+		padding: 8px 10px;
+		margin: 0;
+		white-space: pre-wrap;
+		word-break: break-word;
+		overflow-y: auto;
+		max-height: 400px;
+		color: #c9d1d9;
+	}
+
+	.planning-error {
+		padding: 6px 10px;
+		font-size: 11px;
+		color: #f87171;
+		background: #1a0000;
+		border-top: 1px solid #30363d;
 	}
 </style>

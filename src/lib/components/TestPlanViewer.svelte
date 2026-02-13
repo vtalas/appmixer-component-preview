@@ -20,7 +20,9 @@
 		ExternalLink,
 		Trash2,
 		RotateCw,
-		Pencil
+		Pencil,
+		Copy,
+		Check
 	} from 'lucide-svelte';
 
 	// Tauri shell plugin — imported dynamically.
@@ -261,6 +263,17 @@
 
 	// ── Edit Command ─────────────────────────────────────────────────
 	let editingCmd = $state(null); // { itemName, cmdIndex, inputJson, error }
+	let copiedCmd = $state(null); // cmdKey of recently copied command
+
+	async function copyCommand(cmd, cmdKey) {
+		const text = cmd.cmd || cmd.command || '';
+		if (!text) return;
+		try {
+			await navigator.clipboard.writeText(text);
+			copiedCmd = cmdKey;
+			setTimeout(() => { if (copiedCmd === cmdKey) copiedCmd = null; }, 1500);
+		} catch { /* ignore */ }
+	}
 
 	/** Find the balanced JSON object after `-i` in a command string. */
 	function extractInputJsonRange(cmdStr) {
@@ -1158,6 +1171,17 @@
 												{#if isTauri}
 													<button
 														class="tp-cmd-action"
+														onclick={(e) => { e.stopPropagation(); copyCommand(cmd, cmdKey); }}
+														title="Copy command"
+													>
+														{#if copiedCmd === cmdKey}
+															<Check class="h-3 w-3" />
+														{:else}
+															<Copy class="h-3 w-3" />
+														{/if}
+													</button>
+													<button
+														class="tp-cmd-action"
 														onclick={(e) => { e.stopPropagation(); rerunCommand(item, ci); }}
 														disabled={runningCommand !== null || isRunningCmd || authStatus === 'invalid' || authStatus === 'needs-auth'}
 														title={authStatus === 'invalid' || authStatus === 'needs-auth' ? 'Auth required — validate auth first' : 'Re-run this command'}
@@ -1193,7 +1217,7 @@
 													{#if cmd.stdout}
 														<div class="tp-output-section">
 															<div class="tp-output-label">stdout</div>
-															<pre class="tp-output-pre" use:autoScroll={cmd.stdout}>{extractOutput(cmd.stdout)}</pre>
+															<pre class="tp-output-pre" use:autoScroll={cmd.stdout}>{stripAnsi(cmd.stdout)}</pre>
 														</div>
 													{/if}
 													{#if cmd.stderr}
@@ -1266,6 +1290,7 @@
 		height: 100%;
 		background: var(--color-card);
 		overflow: hidden;
+		min-height: 0;
 	}
 
 	/* Header */
@@ -1656,6 +1681,10 @@
 	.tp-cmd-action.tp-cmd-delete:hover {
 		color: #ef4444;
 		background: #fef2f2;
+	}
+
+	.tp-cmd-action :global(.tp-copied) {
+		color: #22c55e;
 	}
 
 	.tp-cmd-action:disabled {

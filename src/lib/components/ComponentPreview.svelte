@@ -72,7 +72,7 @@
 </script>
 
 <div class="component-editor">
-	<Tabs.Root value={defaultTab}>
+	<Tabs.Root value={defaultTab} class="tabs-root">
 		<Tabs.List class="editor-tabs">
 			{#if hasInPorts}
 				<Tabs.Trigger value="inputs">Inputs</Tabs.Trigger>
@@ -194,6 +194,15 @@
 		border-radius: var(--radius-lg);
 		overflow: hidden;
 		background: var(--color-card);
+		min-height: 0;
+	}
+
+	:global(.tabs-root) {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+		overflow: hidden;
 	}
 
 	:global(.editor-tabs) {
@@ -289,8 +298,6 @@
 		padding: 16px;
 		border-radius: var(--radius-md);
 		font-size: 12px;
-		overflow: auto;
-		max-height: 500px;
 		margin: 0;
 	}
 </style>
