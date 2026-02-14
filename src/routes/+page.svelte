@@ -37,6 +37,11 @@
 	let authCheckingConnector = null; // non-reactive guard
 	let authChildProcess = null; // Tauri Child process ref for cancellation
 
+	// Auto-restore last folder on mount
+	onMount(() => {
+		fileSync.restoreLastFolder();
+	});
+
 	// Use the file sync store's tree instead of static data
 	let currentTree = $derived(fileSync.tree);
 
@@ -489,91 +494,60 @@
 		planningError = null;
 
 		try {
-			const { Command } = await import('@tauri-apps/plugin-shell');
+			const response = await fetch('/api/planning', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ connector: activeConnectorName })
+			});
 
-			// Resolve node path
-			const whichNode = Command.create('sh', ['-l', '-c', 'which node'], { env: {} });
-			const nodeResult = await whichNode.execute();
-			const nodePath = nodeResult.stdout.trim();
-			if (!nodePath) throw new Error('Could not find node');
-
-			// Resolve CLI dir
-			const npmRoot = Command.create('sh', ['-l', '-c', 'npm root -g'], { env: {} });
-			const npmResult = await npmRoot.execute();
-			const cliDir = npmResult.stdout.trim() ? `${npmResult.stdout.trim()}/appmixer` : null;
-
-			// Find run-planning.mjs script
-			const findCmd = Command.create('sh', ['-l', '-c',
-				`for p in scripts/run-planning.mjs ../scripts/run-planning.mjs; do [ -f "$p" ] && echo "$(cd "$(dirname "$p")" && pwd)/$(basename "$p")" && exit 0; done; echo ""`
-			], { env: {} });
-			const findResult = await findCmd.execute();
-			let scriptPath = findResult.stdout.trim();
-			if (!scriptPath) {
-				const pwdCmd = Command.create('sh', ['-l', '-c', 'echo $PWD'], { env: {} });
-				const pwdResult = await pwdCmd.execute();
-				scriptPath = `${pwdResult.stdout.trim()}/scripts/run-planning.mjs`;
+			if (!response.ok) {
+				const data = await response.json();
+				throw new Error(data.error || 'Failed to start planning');
 			}
 
-			// Compute connectorsRootDir by stripping /src/appmixer
-			let connectorsRootDir = (fileSync.directoryPath || '').replace(/\/+$/, '');
-			if (connectorsRootDir.endsWith('/src/appmixer')) {
-				connectorsRootDir = connectorsRootDir.slice(0, -'/src/appmixer'.length);
-			}
+			const reader = response.body?.getReader();
+			if (!reader) throw new Error('No response body');
 
-			const args = [
-				'-l', '-c',
-				[
-					`"${nodePath}"`,
-					`"${scriptPath}"`,
-					`--connectorsDir "${connectorsRootDir}"`,
-					`--connector "${activeConnectorName}"`,
-					cliDir ? `--cliDir "${cliDir}"` : '',
-					'< /dev/null 2>&1'
-				].filter(Boolean).join(' ')
-			];
-
-			const cmd = Command.create('sh', args, { env: {} });
+			const decoder = new TextDecoder();
+			let buffer = '';
 			let output = '';
 
-			cmd.stdout.on('data', (line) => {
-				const trimmed = line.replace(/\n+$/, '');
-				if (trimmed) {
-					output += trimmed + '\n';
-					planningOutput = output;
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+
+				buffer += decoder.decode(value, { stream: true });
+				const lines = buffer.split('\n\n');
+				buffer = lines.pop() || '';
+
+				for (const line of lines) {
+					if (!line.startsWith('data: ')) continue;
+					try {
+						const event = JSON.parse(line.slice(6));
+						if (event.type === 'stdout') {
+							output += event.text;
+							planningOutput = output;
+						} else if (event.type === 'stderr') {
+							output += '[stderr] ' + event.text;
+							planningOutput = output;
+						} else if (event.type === 'done') {
+							planningOutput += `\n[PLANNING] Process exited with code ${event.code}\n`;
+							if (event.code === 0) {
+								await handleReloadTestPlan();
+								activeTab = 'testplan';
+							} else {
+								planningError = `Planning agent exited with code ${event.code}`;
+							}
+						} else if (event.type === 'error') {
+							planningError = event.message;
+						}
+					} catch { /* skip */ }
 				}
-			});
-
-			cmd.stderr.on('data', (line) => {
-				const trimmed = line.replace(/\n+$/, '');
-				if (trimmed) {
-					output += '[stderr] ' + trimmed + '\n';
-					planningOutput = output;
-				}
-			});
-
-			await cmd.spawn();
-
-			cmd.on('close', async (data) => {
-				const exitCode = data.code ?? 1;
-				planningOutput += `\n[PLANNING] Process exited with code ${exitCode}\n`;
-				planningRunning = false;
-
-				if (exitCode === 0) {
-					await handleReloadTestPlan();
-					activeTab = 'testplan';
-				} else {
-					planningError = `Planning agent exited with code ${exitCode}`;
-				}
-			});
-
-			cmd.on('error', (err) => {
-				planningOutput += `\n[PLANNING] Error: ${err}\n`;
-				planningError = String(err);
-				planningRunning = false;
-			});
+			}
 		} catch (err) {
-			planningOutput += `\nFailed to spawn planning agent: ${err}\n`;
+			planningOutput += `\nFailed to run planning agent: ${err}\n`;
 			planningError = String(err);
+		} finally {
 			planningRunning = false;
 		}
 	}
@@ -593,8 +567,11 @@
 
 	async function killPort2300() {
 		try {
-			const { Command } = await import('@tauri-apps/plugin-shell');
-			await Command.create('sh', ['-c', 'lsof -ti :2300 | xargs kill -9 2>/dev/null || true'], { env: {} }).execute();
+			await fetch('/api/auth', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ action: 'kill-port' })
+			});
 		} catch { /* ignore */ }
 	}
 
@@ -617,7 +594,7 @@
 
 	async function checkAuthStatus() {
 		const connectorName = selectedConnector?.name;
-		if (!connectorName || !fileSync.isConnected || !fileSync.isTauri) return;
+		if (!connectorName || !fileSync.isConnected) return;
 		if (authCheckingConnector === connectorName) return;
 		authCheckingConnector = connectorName;
 
@@ -634,26 +611,28 @@
 			}
 			authInfo = info;
 
-			const { Command } = await import('@tauri-apps/plugin-shell');
+			// Validate auth
+			const validateResponse = await fetch('/api/auth', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ action: 'validate', authPath: info.fullPath })
+			});
+			const validateResult = await validateResponse.json();
+
 			if (selectedConnector?.name !== connectorName) return;
 
-			const cmd = Command.create('sh', ['-l', '-c',
-				`appmixer test auth validate "${info.fullPath}"`
-			], { env: {} });
-			const result = await cmd.execute();
-
-			if (selectedConnector?.name !== connectorName) return;
-
-			if (result.code === 0) {
+			if (validateResult.code === 0) {
 				authStatus = 'valid';
 				return;
 			}
 
 			// Try refresh
-			const refreshCmd = Command.create('sh', ['-l', '-c',
-				`appmixer test auth refresh "${info.fullPath}"`
-			], { env: {} });
-			const refreshResult = await refreshCmd.execute();
+			const refreshResponse = await fetch('/api/auth', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ action: 'refresh', authPath: info.fullPath })
+			});
+			const refreshResult = await refreshResponse.json();
 
 			if (selectedConnector?.name !== connectorName) return;
 			authStatus = refreshResult.code === 0 ? 'valid' : 'failed';
@@ -698,43 +677,56 @@
 			// Kill any leftover process on port 2300 from a previous run
 			await killPort2300();
 
-			const { Command } = await import('@tauri-apps/plugin-shell');
 			const cmdStr = buildAuthCommand();
-			const cmd = Command.create('sh', ['-l', '-c', cmdStr], { env: {} });
+			const response = await fetch('/api/auth', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ action: 'login', command: cmdStr })
+			});
 
+			const reader = response.body?.getReader();
+			if (!reader) throw new Error('No response body');
+
+			const decoder = new TextDecoder();
+			let buffer = '';
 			let output = '';
+			let exitCode = 1;
 
-			cmd.stdout.on('data', (line) => {
-				output += line;
-				authLoginResult = output;
-			});
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
 
-			cmd.stderr.on('data', (line) => {
-				output += line;
-				authLoginResult = output;
-			});
+				buffer += decoder.decode(value, { stream: true });
+				const lines = buffer.split('\n\n');
+				buffer = lines.pop() || '';
 
-			authChildProcess = await cmd.spawn();
-
-			cmd.on('close', async (data) => {
-				authChildProcess = null;
-				authLoginRunning = false;
-				if (data.code === 0) {
-					authLoginResult = output + '\nLogin successful!';
-					// Re-check auth status
-					authCheckingConnector = null;
-					await checkAuthStatus();
-					showAuthForm = false;
-				} else {
-					authLoginResult = output + `\nLogin failed (exit code ${data.code})`;
+				for (const line of lines) {
+					if (!line.startsWith('data: ')) continue;
+					try {
+						const event = JSON.parse(line.slice(6));
+						if (event.type === 'stdout' || event.type === 'stderr') {
+							output += event.text;
+							authLoginResult = output;
+						} else if (event.type === 'done') {
+							exitCode = event.code;
+						} else if (event.type === 'error') {
+							output += `\nError: ${event.message}`;
+							authLoginResult = output;
+						}
+					} catch { /* skip */ }
 				}
-			});
+			}
 
-			cmd.on('error', (err) => {
-				authChildProcess = null;
-				authLoginRunning = false;
-				authLoginResult = output + `\nError: ${err}`;
-			});
+			authLoginRunning = false;
+
+			if (exitCode === 0) {
+				authLoginResult = output + '\nLogin successful!';
+				authCheckingConnector = null;
+				await checkAuthStatus();
+				showAuthForm = false;
+			} else {
+				authLoginResult = output + `\nLogin failed (exit code ${exitCode})`;
+			}
 		} catch (err) {
 			authLoginRunning = false;
 			authLoginResult = `Failed to execute login command: ${err}`;
@@ -1296,15 +1288,17 @@
 				<div class="editor-body-wrapper">
 					<div class="editor-body">
 						{#if activeTab === 'properties' || !testPlanData}
-							<ComponentPreview
-								componentJson={comp}
-								onInspectorInputChange={handleInspectorInputChange}
-								onRequiredChange={handleRequiredChange}
-								onTypeChange={handleTypeChange}
-								onOptionsChange={handleOptionsChange}
-								onFieldsChange={handleFieldsChange}
-								onSourceChange={handleSourceChange}
-							/>
+							<div class="properties-scroll">
+								<ComponentPreview
+									componentJson={comp}
+									onInspectorInputChange={handleInspectorInputChange}
+									onRequiredChange={handleRequiredChange}
+									onTypeChange={handleTypeChange}
+									onOptionsChange={handleOptionsChange}
+									onFieldsChange={handleFieldsChange}
+									onSourceChange={handleSourceChange}
+								/>
+							</div>
 						{:else if activeTab === 'testplan' && testPlanData && testPlanConnector}
 							<div class="test-plan-main">
 								<TestPlanViewer
@@ -1684,8 +1678,9 @@
 
 	.editor-body {
 		flex: 1;
-		overflow: auto;
-		padding: 20px;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
 		min-height: 0;
 	}
 
@@ -1740,10 +1735,11 @@
 	}
 
 	.test-plan-main {
-		height: 100%;
+		flex: 1;
 		display: flex;
 		flex-direction: column;
 		min-height: 0;
+		overflow: hidden;
 	}
 
 	.ai-panel {
@@ -1861,13 +1857,24 @@
 		animation: spin 1s linear infinite;
 	}
 
+	.properties-scroll {
+		flex: 1;
+		overflow: auto;
+		padding: 20px;
+		min-height: 0;
+	}
+
 	/* Planning Output Panel */
 	.planning-output-panel {
-		margin-top: 16px;
+		flex-shrink: 0;
+		max-height: 40%;
+		display: flex;
+		flex-direction: column;
 		border-radius: var(--radius-md);
 		overflow: hidden;
 		background: #0d1117;
 		border: 1px solid #30363d;
+		margin: 0 8px 8px;
 	}
 
 	.planning-output-header {
@@ -1942,7 +1949,8 @@
 		white-space: pre-wrap;
 		word-break: break-word;
 		overflow-y: auto;
-		max-height: 400px;
+		flex: 1;
+		min-height: 0;
 		color: #c9d1d9;
 	}
 

@@ -18,48 +18,11 @@
 
 	let { onComponentGenerated, context = '' } = $props();
 
-	// Tauri shell plugin — imported dynamically so the app still loads in a browser
-	let Command = null;
-	let isTauri = false;
-
-	// Cached absolute path to the claude binary (resolved once via login shell)
-	let resolvedClaudePath = null;
-
-	// Detect Tauri environment and load the shell plugin
-	if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
-		isTauri = true;
-		import('@tauri-apps/plugin-shell').then(async (mod) => {
-			Command = mod.Command;
-			// Pre-resolve the claude binary path via a login shell.
-			// IMPORTANT: We must pass env:{} (empty object) to prevent Tauri's
-			// shell plugin from calling env_clear(). With env:{}, the process
-			// inherits the parent's environment. Without it, ALL vars are wiped.
-			try {
-				const which = Command.create('sh', ['-l', '-c', 'which claude'], { env: {} });
-				const result = await which.execute();
-				if (result.code === 0 && result.stdout.trim()) {
-					resolvedClaudePath = result.stdout.trim();
-				}
-				// Log result after dbg is available (next tick)
-				setTimeout(() => {
-					if (resolvedClaudePath) {
-						dbg(`[init] claude resolved: ${resolvedClaudePath}`);
-					} else {
-						dbg(`[init] claude NOT found! code=${result.code} stderr=${result.stderr}`);
-					}
-				}, 0);
-			} catch (e) {
-				setTimeout(() => dbg(`[init] resolve failed: ${e}`), 0);
-			}
-		});
-	}
-
 	let messages = $state([]);
 	let inputValue = $state('');
 	let isStreaming = $state(false);
 	let sessionId = $state(null);
-	let childProcess = $state(null);
-	let abortController = null;  // browser-mode SSE abort
+	let abortController = null;
 	let chatContainer = $state(null);
 	let collapsed = $state(false);
 	let copiedIndex = $state(null);
@@ -383,209 +346,91 @@ IMPORTANT: When generating a component.json, output ONLY the JSON wrapped in a m
 			currentToolCalls: []
 		};
 
-		if (isTauri && Command) {
-			// ── Tauri path: spawn claude via shell plugin ────────────
-			try {
-				if (!resolvedClaudePath) {
-					throw new Error(
-						'Claude CLI not found. Make sure it is installed and available in your PATH.'
-					);
+		// SSE via /api/chat endpoint (Node.js backend spawns claude CLI)
+		const controller = new AbortController();
+		abortController = controller;
+
+		try {
+			const response = await fetch('/api/chat', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					prompt: fullPrompt,
+					sessionId
+				}),
+				signal: controller.signal
+			});
+
+			if (!response.ok) {
+				throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+			}
+
+			const reader = response.body?.getReader();
+			if (!reader) throw new Error('No response body');
+
+			const decoder = new TextDecoder();
+			let buffer = '';
+
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+
+				buffer += decoder.decode(value, { stream: true });
+
+				// Process SSE lines
+				const lines = buffer.split('\n\n');
+				buffer = lines.pop() || '';
+
+				for (const line of lines) {
+					if (!line.startsWith('data: ')) continue;
+					const jsonStr = line.slice(6);
+					try {
+						const event = JSON.parse(jsonStr);
+						if (processStreamEvent(event, state)) {
+							flushStreamState(state);
+						}
+					} catch {
+						// skip unparseable lines
+					}
 				}
+			}
 
-				// Spawn claude using its resolved absolute path via sh -c.
-				// The prompt is passed through $CLAUDE_PROMPT env var to
-				// avoid shell escaping issues with special characters.
-				//
-				// IMPORTANT: passing env:{...} prevents Tauri's env_clear()
-				// which wipes ALL vars when env is omitted. With env:{...}
-				// the process inherits the full parent environment.
-				const sessionArgs = sessionId ? ` --session-id '${sessionId}'` : '';
-				const cmd = Command.create('sh', [
-					'-c',
-					`exec "${resolvedClaudePath}" --output-format stream-json --verbose -p "$CLAUDE_PROMPT"${sessionArgs} < /dev/null`
-				], {
-					env: {
-						CLAUDE_PROMPT: fullPrompt,
-					}
-				});
-				dbg(`[spawn] via sh -c, path: ${resolvedClaudePath}`);
-
-				// Buffer for partial lines — Tauri may deliver chunks, not full lines
-				let stdoutBuffer = '';
-
-				// Register ALL event handlers BEFORE spawning
-				cmd.stdout.on('data', (chunk) => {
-					dbg(`[stdout] ${JSON.stringify(chunk).slice(0, 120)}`);
-					stdoutBuffer += chunk;
-
-					// Split on newlines — each JSON object is one line
-					const lines = stdoutBuffer.split('\n');
-					// Keep the last (possibly incomplete) line in the buffer
-					stdoutBuffer = lines.pop() || '';
-
-					for (const line of lines) {
-						const trimmed = line.trim();
-						if (!trimmed) continue;
-						try {
-							const event = JSON.parse(trimmed);
-							dbg(`[event] ${event.type}`);
-							if (processStreamEvent(event, state)) {
-								flushStreamState(state);
-							}
-						} catch (e) {
-							dbg(`[parse err] ${e} | ${trimmed.slice(0, 80)}`);
-						}
-					}
-				});
-
-				cmd.stderr.on('data', (line) => {
-					dbg(`[stderr] ${line.slice(0, 120)}`);
-				});
-
-				// Register close/error handlers BEFORE spawn to avoid race
-				const closePromise = new Promise((resolve) => {
-					cmd.on('close', (data) => {
-						dbg(`[close] ${JSON.stringify(data)}`);
-						// Process any remaining buffer
-						if (stdoutBuffer.trim()) {
-							try {
-								const event = JSON.parse(stdoutBuffer.trim());
-								if (processStreamEvent(event, state)) {
-									flushStreamState(state);
-								}
-							} catch {
-								// not valid JSON
-							}
-							stdoutBuffer = '';
-						}
-						resolve();
-					});
-					cmd.on('error', (err) => {
-						dbg(`[error] ${err}`);
-						state.assistantContent += (state.assistantContent ? '\n\n' : '') +
-							`Error: ${err}`;
-						flushStreamState(state);
-						resolve();
-					});
-				});
-
-				const child = await cmd.spawn();
-				childProcess = child;
-				dbg(`[spawned] pid: ${child.pid}`);
-
-				// Wait for the process to close
-				await closePromise;
-
-				// Check if the response contains a component.json
-				const componentJson = extractComponentJson(state.assistantContent);
-				if (componentJson) {
-					const updated = [...messages];
+			// Check if the response contains a component.json
+			const componentJson = extractComponentJson(state.assistantContent);
+			if (componentJson) {
+				const updated = [...messages];
+				updated[updated.length - 1] = {
+					...updated[updated.length - 1],
+					componentJson
+				};
+				messages = updated;
+			}
+		} catch (err) {
+			if (err instanceof Error && err.name === 'AbortError') {
+				const updated = [...messages];
+				if (updated.length > 0 && updated[updated.length - 1].role === 'assistant') {
 					updated[updated.length - 1] = {
 						...updated[updated.length - 1],
-						componentJson
+						content: updated[updated.length - 1].content + '\n\n_(cancelled)_'
 					};
 					messages = updated;
 				}
-			} catch (err) {
+			} else {
 				messages = [...messages.slice(0, -1), {
 					role: 'assistant',
-					content: `Error: ${err instanceof Error ? err.message : String(err)}`,
+					content: `Error: ${err instanceof Error ? err.message : 'Unknown error'}`,
 					timestamp: new Date()
 				}];
-			} finally {
-				isStreaming = false;
-				childProcess = null;
-				scrollToBottom();
 			}
-		} else {
-			// ── Browser fallback: SSE via /api/chat ──────────────────
-			const controller = new AbortController();
-			abortController = controller;
-
-			try {
-				const response = await fetch('/api/chat', {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({
-						prompt: fullPrompt,
-						sessionId
-					}),
-					signal: controller.signal
-				});
-
-				if (!response.ok) {
-					throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-				}
-
-				const reader = response.body?.getReader();
-				if (!reader) throw new Error('No response body');
-
-				const decoder = new TextDecoder();
-				let buffer = '';
-
-				while (true) {
-					const { done, value } = await reader.read();
-					if (done) break;
-
-					buffer += decoder.decode(value, { stream: true });
-
-					// Process SSE lines
-					const lines = buffer.split('\n\n');
-					buffer = lines.pop() || '';
-
-					for (const line of lines) {
-						if (!line.startsWith('data: ')) continue;
-						const jsonStr = line.slice(6);
-						try {
-							const event = JSON.parse(jsonStr);
-							if (processStreamEvent(event, state)) {
-								flushStreamState(state);
-							}
-						} catch {
-							// skip unparseable lines
-						}
-					}
-				}
-
-				// Check if the response contains a component.json
-				const componentJson = extractComponentJson(state.assistantContent);
-				if (componentJson) {
-					const updated = [...messages];
-					updated[updated.length - 1] = {
-						...updated[updated.length - 1],
-						componentJson
-					};
-					messages = updated;
-				}
-			} catch (err) {
-				if (err instanceof Error && err.name === 'AbortError') {
-					const updated = [...messages];
-					if (updated.length > 0 && updated[updated.length - 1].role === 'assistant') {
-						updated[updated.length - 1] = {
-							...updated[updated.length - 1],
-							content: updated[updated.length - 1].content + '\n\n_(cancelled)_'
-						};
-						messages = updated;
-					}
-				} else {
-					messages = [...messages.slice(0, -1), {
-						role: 'assistant',
-						content: `Error: ${err instanceof Error ? err.message : 'Unknown error'}`,
-						timestamp: new Date()
-					}];
-				}
-			} finally {
-				isStreaming = false;
-				abortController = null;
-				scrollToBottom();
-			}
+		} finally {
+			isStreaming = false;
+			abortController = null;
+			scrollToBottom();
 		}
 	}
 
 	function stopStreaming() {
-		if (isTauri && childProcess) {
-			childProcess.kill();
-		} else if (abortController) {
+		if (abortController) {
 			abortController.abort();
 		}
 	}

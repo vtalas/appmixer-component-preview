@@ -16,7 +16,6 @@
         SkipForward,
         Bot,
         Square,
-        Sparkles,
         ExternalLink,
         Trash2,
         RotateCw,
@@ -25,27 +24,8 @@
         Check
     } from 'lucide-svelte';
 
-    // Tauri shell plugin — imported dynamically.
-    // These MUST be $state so Svelte re-renders when they become available.
-    let Command = $state(null);
-    let isTauri = $state(false);
-    let resolvedAppmixerPath = $state(null);
-
-    if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
-        isTauri = true;
-        import('@tauri-apps/plugin-shell').then(async (mod) => {
-            Command = mod.Command;
-            try {
-                const which = mod.Command.create('sh', ['-l', '-c', 'which appmixer'], { env: {} });
-                const result = await which.execute();
-                if (result.code === 0 && result.stdout.trim()) {
-                    resolvedAppmixerPath = result.stdout.trim();
-                }
-            } catch {
-                // ignore
-            }
-        });
-    }
+    // Server-ready state
+    let serverReady = $state(true);
 
     let { testPlan, connectorName, connectorsDir, onTestPlanUpdated, onReloadTestPlan } = $props();
 
@@ -54,6 +34,7 @@
     let expandedCommands = $state(new Set());
     let runningTests = $state(new Set());
     let runningAll = $state(false);
+    let testAbortController = null;
 
     // Summary stats
     let stats = $derived.by(() => {
@@ -188,77 +169,117 @@
     }
 
     async function runSingleTest(item) {
-        if (!isTauri || !Command || !resolvedAppmixerPath) return;
-
         runningTests = new Set([...runningTests, item.name]);
         const startTime = Date.now();
+        aiTestOutput = '';
+
+        const controller = new AbortController();
+        testAbortController = controller;
 
         try {
             const componentPath = resolveComponentPath(item);
 
-            // Also try to extract inputs from the last command if present
+            // Extract inputs from the last command if present
             let inputsArg = '';
+            let inputsJson = '';
             if (item.result?.commands?.length) {
                 const lastCmd = item.result.commands[item.result.commands.length - 1];
                 const inputMatch = (lastCmd.cmd || '').match(/-i\s+(\{.*\})/);
                 if (inputMatch) {
-                    inputsArg = ` -i '$APPMIXER_TEST_INPUTS'`;
+                    inputsJson = inputMatch[1];
+                    inputsArg = ` -i '${inputsJson}'`;
                 }
             }
 
-            const env = {};
-            if (inputsArg) {
-                const lastCmd = item.result.commands[item.result.commands.length - 1];
-                const inputMatch = (lastCmd.cmd || '').match(/-i\s+(\{.*\})/);
-                if (inputMatch) env.APPMIXER_TEST_INPUTS = inputMatch[1];
+            const shellCmd = `appmixer test component "${componentPath}"${inputsArg} < /dev/null 2>&1`;
+            const response = await fetch('/api/shell', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ command: shellCmd, stream: true }),
+                signal: controller.signal
+            });
+
+            const reader = response.body?.getReader();
+            if (!reader) throw new Error('No response body');
+
+            openPopup();
+
+            const decoder = new TextDecoder();
+            let buffer = '';
+            let collectedStdout = '';
+            let collectedStderr = '';
+            let exitCode = 1;
+            let output = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n\n');
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    try {
+                        const event = JSON.parse(line.slice(6));
+                        if (event.type === 'stdout') {
+                            collectedStdout += event.text;
+                            output += event.text;
+                            aiTestOutput = output;
+                        } else if (event.type === 'stderr') {
+                            collectedStderr += event.text;
+                            output += event.text;
+                            aiTestOutput = output;
+                        } else if (event.type === 'done') {
+                            exitCode = event.code ?? 1;
+                        }
+                    } catch { /* skip */ }
+                }
             }
 
-            const cmd = Command.create('sh', [
-                '-c',
-                `"${resolvedAppmixerPath}" test component "${componentPath}"${inputsArg} < /dev/null 2>&1`
-            ], { env });
-
-            const result = await cmd.execute();
             const duration = Date.now() - startTime;
             const relPath = componentPath.replace(/^.*?(src\/appmixer\/)/, '$1');
             const newCommand = {
-                exitCode: result.code ?? 1,
-                cmd: `appmixer test component ${componentPath}${inputsArg ? ` -i ${env.APPMIXER_TEST_INPUTS || ''}` : ''}`,
+                exitCode,
+                cmd: `appmixer test component ${componentPath}${inputsJson ? ` -i ${inputsJson}` : ''}`,
                 command: `appmixer test component ${relPath}`,
-                stdout: result.stdout || '',
-                stderr: result.stderr || '',
+                stdout: collectedStdout,
+                stderr: collectedStderr,
                 duration
             };
 
-            // Update the test plan item
             const updatedPlan = testPlan.map(t => {
                 if (t.name !== item.name) return t;
                 const commands = [...(t.result?.commands || []), newCommand];
                 return {
                     ...t,
                     completed: true,
-                    status: result.code === 0 ? 'passed' : 'failed',
+                    status: exitCode === 0 ? 'passed' : 'failed',
                     result: { commands },
-                    reason: result.code !== 0 ? `Exit code ${result.code}` : null,
-                    description: result.code !== 0 ? stripAnsi(result.stdout || result.stderr || '').slice(0, 500) : null
+                    reason: exitCode !== 0 ? `Exit code ${exitCode}` : null,
+                    description: exitCode !== 0 ? stripAnsi(collectedStdout || collectedStderr || '').slice(0, 500) : null
                 };
             });
 
             onTestPlanUpdated?.(updatedPlan);
-
-            // Auto-expand to show result
-            expandedTests = new Set([...expandedTests, item.name]);
+            aiTestOutput += `\nProcess exited with code ${exitCode}\n`;
         } catch (err) {
-            console.error(`Failed to run test for ${item.name}:`, err);
+            if (err instanceof Error && err.name === 'AbortError') {
+                aiTestOutput += '\nStopped by user\n';
+            } else {
+                console.error(`Failed to run test for ${item.name}:`, err);
+                aiTestOutput += `\nFailed: ${err}\n`;
+            }
         } finally {
             const newSet = new Set(runningTests);
             newSet.delete(item.name);
             runningTests = newSet;
+            testAbortController = null;
         }
     }
 
     async function runAllAiTests() {
-        if (!isTauri || !Command || !resolvedNodePath) return;
         runningAll = true;
 
         const items = testPlan.filter(item => !item.ignored);
@@ -413,18 +434,22 @@
     }
 
     async function rerunCommand(item, cmdIndex) {
-        if (!isTauri || !Command || !resolvedAppmixerPath) return;
         const srcCmd = item.result?.commands?.[cmdIndex];
         if (!srcCmd) return;
 
         const fullCmd = srcCmd.cmd || srcCmd.command || '';
         if (!fullCmd) return;
 
+        runningTests = new Set([...runningTests, item.name]);
         const startTime = Date.now();
+        aiTestOutput = '';
+
+        const controller = new AbortController();
+        testAbortController = controller;
 
         // Create a new "running" command entry and append it to the plan immediately
         const newCommand = {
-            exitCode: null,       // null = still running
+            exitCode: null,
             cmd: srcCmd.cmd,
             command: srcCmd.command,
             stdout: '',
@@ -438,54 +463,65 @@
         });
         onTestPlanUpdated?.(updatedPlanInit);
 
-        // The new command is the last one — track its index
         const newCmdIndex = (item.result?.commands?.length || 0);
         const cmdKey = `${item.name}-${newCmdIndex}`;
         runningCommand = cmdKey;
 
-        // Auto-expand the test and the new command row
-        expandedTests = new Set([...expandedTests, item.name]);
-        expandedCommands = new Set([...expandedCommands, cmdKey]);
-
-        // Scroll the new command row into view after DOM updates
-        tick().then(() => {
-            const el = document.querySelector(`[data-cmd-key="${cmdKey}"]`);
-            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        });
-
         try {
             // Quote JSON arguments for -i so the shell doesn't mangle braces
-            let shellCmd = fullCmd.replace(/^appmixer\s/, `"${resolvedAppmixerPath}" `);
+            let shellCmd = fullCmd;
             shellCmd = shellCmd.replace(/-i\s+(\{.*\})/, (_, json) => `-i '${json}'`);
-            const execCmd = Command.create('sh', ['-l', '-c', `${shellCmd} < /dev/null 2>&1`], { env: {} });
 
+            const response = await fetch('/api/shell', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ command: `${shellCmd} < /dev/null 2>&1`, stream: true }),
+                signal: controller.signal
+            });
+
+            const reader = response.body?.getReader();
+            if (!reader) throw new Error('No response body');
+
+            openPopup();
+
+            const decoder = new TextDecoder();
+            let buffer = '';
             let collectedStdout = '';
             let collectedStderr = '';
+            let exitCode = 1;
+            let output = '';
 
-            execCmd.stdout.on('data', (line) => {
-                collectedStdout += line;
-                // Live-update the command row in the plan
-                updateRerunningCommand(item.name, newCmdIndex, { stdout: collectedStdout });
-            });
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
 
-            execCmd.stderr.on('data', (line) => {
-                collectedStderr += line;
-                updateRerunningCommand(item.name, newCmdIndex, { stderr: collectedStderr });
-            });
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n\n');
+                buffer = lines.pop() || '';
 
-            await execCmd.spawn();
-
-            // Wait for completion
-            const result = await new Promise((resolve) => {
-                execCmd.on('close', (data) => {
-                    resolve({ code: data.code ?? 1 });
-                });
-            });
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    try {
+                        const event = JSON.parse(line.slice(6));
+                        if (event.type === 'stdout') {
+                            collectedStdout += event.text;
+                            output += event.text;
+                            aiTestOutput = output;
+                            updateRerunningCommand(item.name, newCmdIndex, { stdout: collectedStdout });
+                        } else if (event.type === 'stderr') {
+                            collectedStderr += event.text;
+                            output += event.text;
+                            aiTestOutput = output;
+                            updateRerunningCommand(item.name, newCmdIndex, { stderr: collectedStderr });
+                        } else if (event.type === 'done') {
+                            exitCode = event.code ?? 1;
+                        }
+                    } catch { /* skip */ }
+                }
+            }
 
             const duration = Date.now() - startTime;
-            const exitCode = result.code;
 
-            // Final update with exit code & duration
             const finalPlan = testPlan.map(t => {
                 if (t.name !== item.name) return t;
                 const commands = [...(t.result?.commands || [])];
@@ -506,16 +542,24 @@
                 };
             });
             onTestPlanUpdated?.(finalPlan);
+            aiTestOutput += `\nProcess exited with code ${exitCode}\n`;
         } catch (err) {
-            // Mark the command as failed
-            updateRerunningCommand(item.name, newCmdIndex, {
-                exitCode: 1,
-                stderr: `Error: ${err}`,
-                duration: Date.now() - startTime
-            });
-            console.error(`Failed to rerun command:`, err);
+            if (err instanceof Error && err.name === 'AbortError') {
+                aiTestOutput += '\nStopped by user\n';
+            } else {
+                updateRerunningCommand(item.name, newCmdIndex, {
+                    exitCode: 1,
+                    stderr: `Error: ${err}`,
+                    duration: Date.now() - startTime
+                });
+                console.error(`Failed to rerun command:`, err);
+            }
         } finally {
             runningCommand = null;
+            const newSet = new Set(runningTests);
+            newSet.delete(item.name);
+            runningTests = newSet;
+            testAbortController = null;
         }
     }
 
@@ -560,37 +604,8 @@
     }
 
     // ── AI Test Agent ─────────────────────────────────────────────────
-    let aiTestRunning = $state(null); // component name currently being AI-tested
+    let aiTestRunning = $state(null);
     let aiTestOutput = $state('');
-    let aiTestChildPid = $state(null);
-    let aiTestShowOutput = $state(false);
-    let resolvedNodePath = $state(null);
-    let resolvedCliDir = $state(null);
-
-    // Resolve node and appmixer-cli paths on mount
-    if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
-        import('@tauri-apps/plugin-shell').then(async (mod) => {
-            // Find node
-            try {
-                const which = mod.Command.create('sh', ['-l', '-c', 'which node'], { env: {} });
-                const result = await which.execute();
-                if (result.code === 0 && result.stdout.trim()) {
-                    resolvedNodePath = result.stdout.trim();
-                }
-            } catch { /* ignore */
-            }
-
-            // Find appmixer CLI directory (npm root -g + /appmixer)
-            try {
-                const npmRoot = mod.Command.create('sh', ['-l', '-c', 'npm root -g'], { env: {} });
-                const result = await npmRoot.execute();
-                if (result.code === 0 && result.stdout.trim()) {
-                    resolvedCliDir = `${result.stdout.trim()}/appmixer`;
-                }
-            } catch { /* ignore */
-            }
-        });
-    }
 
     /**
      * Derive the connectors root directory from connectorsDir.
@@ -605,192 +620,100 @@
         return dir;
     }
 
-    async function runAiTest(componentName) {
-        if (!isTauri || !Command || !resolvedNodePath) return;
+    let aiTestAbortController = null;
 
+    async function runAiTest(componentName) {
         aiTestRunning = componentName;
         if (!runningAll) {
             aiTestOutput = '';
         } else {
             aiTestOutput += `\n${'─'.repeat(60)}\n[Run All] Testing: ${componentName}\n${'─'.repeat(60)}\n`;
         }
-        aiTestShowOutput = true;
-
         const connectorsRootDir = getConnectorsRootDir();
-        const scriptPath = await getScriptPath();
 
-        if (!scriptPath) {
-            aiTestOutput = 'ERROR: Could not find run-ai-test.mjs script\n';
-            aiTestRunning = null;
-            return;
-        }
+        // Build the command to run the AI test script via the shell API
+        const shellCmd = `node scripts/run-ai-test.mjs --connectorsDir "${connectorsRootDir}" --connector "${connectorName}" --component "${componentName}" < /dev/null 2>&1`;
 
-        const args = [
-            '-l', '-c',
-            [
-                `"${resolvedNodePath}"`,
-                `"${scriptPath}"`,
-                `--connectorsDir "${connectorsRootDir}"`,
-                `--connector "${connectorName}"`,
-                `--component "${componentName}"`,
-                resolvedCliDir ? `--cliDir "${resolvedCliDir}"` : '',
-                '< /dev/null 2>&1'
-            ].filter(Boolean).join(' ')
-        ];
+        const controller = new AbortController();
+        aiTestAbortController = controller;
 
         try {
-            const cmd = Command.create('sh', args, { env: {} });
+            const response = await fetch('/api/shell', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ command: shellCmd, stream: true, useAppCwd: true }),
+                signal: controller.signal
+            });
+
+            const reader = response.body?.getReader();
+            if (!reader) throw new Error('No response body');
+
+            // Auto-open popup to show output
+            openPopup();
+
+            const decoder = new TextDecoder();
+            let buffer = '';
             let output = runningAll ? aiTestOutput : '';
 
-            cmd.stdout.on('data', (line) => {
-                const trimmed = line.replace(/\n+$/, '');
-                if (trimmed) {
-                    output += trimmed + '\n';
-                    aiTestOutput = output;
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n\n');
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    try {
+                        const event = JSON.parse(line.slice(6));
+                        if (event.type === 'stdout') {
+                            output += event.text;
+                            aiTestOutput = output;
+                        } else if (event.type === 'stderr') {
+                            output += '[stderr] ' + event.text;
+                            aiTestOutput = output;
+                        } else if (event.type === 'done') {
+                            const exitCode = event.code ?? 1;
+                            aiTestOutput += `\n[AI-TEST] Process exited with code ${exitCode}\n`;
+                            if (exitCode === 0 && !runningAll) {
+                                setTimeout(() => { onReloadTestPlan?.(); }, 500);
+                            }
+                        } else if (event.type === 'error') {
+                            aiTestOutput += `\n[AI-TEST] Error: ${event.message}\n`;
+                        }
+                    } catch { /* skip */ }
                 }
-            });
-
-            cmd.stderr.on('data', (line) => {
-                const trimmed = line.replace(/\n+$/, '');
-                if (trimmed) {
-                    output += '[stderr] ' + trimmed + '\n';
-                    aiTestOutput = output;
-                }
-            });
-
-            const child = await cmd.spawn();
-            aiTestChildPid = child.pid;
-
-            // Wait for the process to finish
-            cmd.on('close', (data) => {
-                const exitCode = data.code ?? 1;
-                const exitLine = `\n[AI-TEST] Process exited with code ${exitCode}\n`;
-                aiTestOutput += exitLine;
-                aiTestRunning = null;
-                aiTestChildPid = null;
-
-                // Reload test plan after AI test completes (skip during Run All — reload once at end)
-                if (exitCode === 0 && !runningAll) {
-                    setTimeout(() => {
-                        onReloadTestPlan?.();
-                    }, 500);
-                }
-            });
-
-            cmd.on('error', (err) => {
-                aiTestOutput += `\n[AI-TEST] Error: ${err}\n`;
-                aiTestRunning = null;
-                aiTestChildPid = null;
-            });
+            }
         } catch (err) {
-            aiTestOutput += `\nFailed to spawn AI test: ${err}\n`;
+            if (err instanceof Error && err.name === 'AbortError') {
+                aiTestOutput += '\n[AI-TEST] Stopped by user\n';
+            } else {
+                aiTestOutput += `\nFailed to run AI test: ${err}\n`;
+            }
+        } finally {
             aiTestRunning = null;
-            aiTestChildPid = null;
+            aiTestAbortController = null;
         }
     }
 
     async function stopAiTest() {
-        if (aiTestChildPid && Command) {
-            try {
-                const killCmd = Command.create('sh', ['-c', `kill -9 -${aiTestChildPid} 2>/dev/null; kill -9 ${aiTestChildPid} 2>/dev/null`], { env: {} });
-                await killCmd.execute();
-            } catch {
-                // best effort
-            }
-            aiTestRunning = null;
-            aiTestChildPid = null;
-            aiTestOutput += '\n[AI-TEST] Stopped by user\n';
+        if (aiTestAbortController) {
+            aiTestAbortController.abort();
+            aiTestAbortController = null;
+        }
+        aiTestRunning = null;
+        aiTestOutput += '\n[AI-TEST] Stopped by user\n';
+    }
+
+    function stopTest() {
+        if (testAbortController) {
+            testAbortController.abort();
+            testAbortController = null;
         }
     }
 
-    async function getScriptPath() {
-        if (!Command) return null;
-        // Try to find the script relative to the app
-        // In dev, it's at the project root scripts/run-ai-test.mjs
-        // In production, it would be bundled differently
-        const candidates = [
-            // Dev path (relative to where the Tauri app runs from)
-            'scripts/run-ai-test.mjs',
-            '../scripts/run-ai-test.mjs'
-        ];
-
-        // Use __dirname-like resolution via Tauri
-        try {
-            const findCmd = Command.create('sh', ['-l', '-c',
-                `for p in scripts/run-ai-test.mjs ../scripts/run-ai-test.mjs; do [ -f "$p" ] && echo "$(cd "$(dirname "$p")" && pwd)/$(basename "$p")" && exit 0; done; echo ""`
-            ], { env: {} });
-            const result = await findCmd.execute();
-            const found = result.stdout.trim();
-            if (found) return found;
-        } catch { /* ignore */
-        }
-
-        // Fallback: use a fixed path based on app location
-        try {
-            const resourceCmd = Command.create('sh', ['-l', '-c', 'echo $PWD'], { env: {} });
-            const result = await resourceCmd.execute();
-            const pwd = result.stdout.trim();
-            if (pwd) {
-                return `${pwd}/scripts/run-ai-test.mjs`;
-            }
-        } catch { /* ignore */
-        }
-
-        return null;
-    }
-
-    // Auto-scroll directive: scrolls element to bottom whenever the bound value changes
-    function autoScroll(node, _value) {
-        node.scrollTop = node.scrollHeight;
-        return {
-            update() {
-                node.scrollTop = node.scrollHeight;
-            }
-        };
-    }
-
-    // ── Resizable AI output panel ────────────────────────────────────
-    const AI_PANEL_STORAGE_KEY = 'ai-test-panel-height';
-    const AI_PANEL_MIN = 150;
-    const AI_PANEL_DEFAULT = 500;
-
-    let aiPanelHeight = $state(AI_PANEL_DEFAULT);
-    let isResizing = $state(false);
     let aiPopupWindow = $state(null);
-
-    // Restore saved height
-    if (typeof window !== 'undefined') {
-        try {
-            const saved = localStorage.getItem(AI_PANEL_STORAGE_KEY);
-            if (saved) aiPanelHeight = Math.max(AI_PANEL_MIN, parseInt(saved, 10));
-        } catch { /* ignore */
-        }
-    }
-
-    function onResizeStart(e) {
-        e.preventDefault();
-        isResizing = true;
-        const startY = e.clientY;
-        const startHeight = aiPanelHeight;
-
-        function onMove(ev) {
-            const delta = startY - ev.clientY;
-            aiPanelHeight = Math.max(AI_PANEL_MIN, startHeight + delta);
-        }
-
-        function onUp() {
-            isResizing = false;
-            window.removeEventListener('mousemove', onMove);
-            window.removeEventListener('mouseup', onUp);
-            try {
-                localStorage.setItem(AI_PANEL_STORAGE_KEY, String(aiPanelHeight));
-            } catch { /* */
-            }
-        }
-
-        window.addEventListener('mousemove', onMove);
-        window.addEventListener('mouseup', onUp);
-    }
 
     // ── Popup window ─────────────────────────────────────────────────
     function openPopup() {
@@ -885,25 +808,19 @@
      * If validation fails, automatically attempt a refresh.
      */
     async function validateAuth() {
-        if (!isTauri || !Command || !resolvedAppmixerPath) {
-            authStatus = 'needs-auth';
-            return;
-        }
-
         authStatus = 'checking';
         try {
             const authPath = `${connectorsDir}/${connectorName}/auth.js`;
-            const cmd = Command.create('sh', [
-                '-l', '-c',
-                `"${resolvedAppmixerPath}" test auth validate "${authPath}" < /dev/null 2>&1`
-            ], { env: {} });
-
-            const result = await cmd.execute();
+            const response = await fetch('/api/auth', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'validate', authPath })
+            });
+            const result = await response.json();
             if (result.code === 0) {
                 authStatus = 'valid';
             } else {
-                console.warn(`Auth validation failed for ${connectorName}, attempting refresh…`, result.stdout);
-                // Validation failed — try refresh automatically
+                console.warn(`Auth validation failed for ${connectorName}, attempting refresh…`);
                 await refreshAuth();
             }
         } catch (err) {
@@ -913,22 +830,20 @@
     }
 
     async function refreshAuth() {
-        if (!isTauri || !Command || !resolvedAppmixerPath) return;
-
         authStatus = 'refreshing';
         try {
             const authPath = `${connectorsDir}/${connectorName}/auth.js`;
-            const cmd = Command.create('sh', [
-                '-l', '-c',
-                `"${resolvedAppmixerPath}" test auth refresh "${authPath}" < /dev/null 2>&1`
-            ], { env: {} });
-
-            const result = await cmd.execute();
+            const response = await fetch('/api/auth', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'refresh', authPath })
+            });
+            const result = await response.json();
             if (result.code === 0) {
                 authStatus = 'valid';
             } else {
                 authStatus = 'invalid';
-                console.warn(`Auth refresh failed for ${connectorName}:`, result.stdout, result.stderr);
+                console.warn(`Auth refresh failed for ${connectorName}`);
             }
         } catch (err) {
             authStatus = 'invalid';
@@ -936,9 +851,9 @@
         }
     }
 
-    // Auto-validate auth when the component mounts and shell is available
+    // Auto-validate auth when the component mounts
     $effect(() => {
-        if (isTauri && Command && resolvedAppmixerPath && connectorName && connectorsDir) {
+        if (connectorName && connectorsDir) {
             validateAuth();
         }
     });
@@ -953,12 +868,12 @@
             <Badge variant="outline" class="tp-connector-badge">{connectorName}</Badge>
         </div>
         <div class="tp-header-right">
-            {#if isTauri}
+            {#if true}
                 <Button
                         variant={authStatus === 'valid' ? 'outline' : authStatus === 'invalid' || authStatus === 'needs-auth' ? 'destructive' : 'outline'}
                         size="sm"
                         onclick={validateAuth}
-                        disabled={authStatus === 'checking' || authStatus === 'refreshing' || !resolvedAppmixerPath}
+                        disabled={authStatus === 'checking' || authStatus === 'refreshing'}
                         title={authStatus === 'invalid' || authStatus === 'needs-auth' ? 'Click to retry auth validation & refresh' : 'Validate authentication'}
                 >
                     {#if authStatus === 'checking'}
@@ -982,7 +897,7 @@
                         variant="default"
                         size="sm"
                         onclick={runAllAiTests}
-                        disabled={runningAll || aiTestRunning !== null || !resolvedNodePath || authStatus === 'invalid' || authStatus === 'needs-auth'}
+                        disabled={runningAll || aiTestRunning !== null || authStatus === 'invalid' || authStatus === 'needs-auth'}
                         title={authStatus === 'invalid' || authStatus === 'needs-auth' ? 'Auth required — validate auth first' : 'Run all AI tests'}
                 >
                     {#if runningAll}
@@ -993,16 +908,6 @@
                         Run All
                     {/if}
                 </Button>
-                {#if aiTestShowOutput}
-                    <Button
-                            variant="ghost"
-                            size="sm"
-                            onclick={() => aiTestShowOutput = false}
-                            title="Hide AI output"
-                    >
-                        <ChevronDown class="h-3.5 w-3.5"/>
-                    </Button>
-                {/if}
             {/if}
         </div>
     </div>
@@ -1060,45 +965,6 @@
         {/if}
     </div>
 
-    <!-- AI Test Output Panel -->
-    {#if aiTestShowOutput && (aiTestOutput || aiTestRunning)}
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div class="tp-ai-resize-handle" onmousedown={onResizeStart}></div>
-        <div class="tp-ai-output-panel" style="height: {aiPanelHeight}px">
-            <div class="tp-ai-output-header">
-                <div class="tp-ai-output-title">
-                    <Sparkles class="h-3.5 w-3.5"/>
-                    <span>AI Test Agent</span>
-                    {#if aiTestRunning}
-                        <Badge variant="secondary" class="tp-ai-badge">
-                            <Loader2 class="h-3 w-3 spinning"/>
-                            {aiTestRunning}
-                        </Badge>
-                    {:else}
-                        <Badge variant="outline" class="tp-ai-badge">done</Badge>
-                    {/if}
-                </div>
-                <div class="tp-ai-output-actions">
-                    {#if aiTestRunning}
-                        <Button variant="destructive" size="sm" onclick={stopAiTest} title="Stop AI test">
-                            <Square class="h-3 w-3 mr-1"/>
-                            Stop
-                        </Button>
-                    {/if}
-                    <Button variant="ghost" size="sm" onclick={openPopup} title="Open in popup window"
-                            class="tp-popup-btn">
-                        <ExternalLink class="h-3.5 w-3.5"/>
-                    </Button>
-                    <Button variant="ghost" size="sm" onclick={() => { aiTestShowOutput = false; aiTestOutput = ''; }}
-                            title="Close">
-                        <XCircle class="h-3.5 w-3.5"/>
-                    </Button>
-                </div>
-            </div>
-            <pre class="tp-ai-output-pre" use:autoScroll={aiTestOutput}>{stripAnsi(aiTestOutput)}</pre>
-        </div>
-    {/if}
-
     <!-- Test list -->
     <div class="tp-list">
         {#if filteredItems.length === 0}
@@ -1120,7 +986,7 @@
                             {:else}
                                 <ChevronRight class="h-3.5 w-3.5 tp-chevron"/>
                             {/if}
-                            {#if isRunning}
+                            {#if isRunning || aiTestRunning === item.name}
                                 <Loader2 class="h-4 w-4 spinning tp-status-icon running"/>
                             {:else if item.status === 'passed'}
                                 <CheckCircle2 class="h-4 w-4 tp-status-icon passed"/>
@@ -1148,35 +1014,75 @@
                             {:else}
                                 <Badge variant="outline" class="tp-status-badge">pending</Badge>
                             {/if}
-                            {#if isTauri && !item.ignored}
-                                <Button
-                                        variant="ghost"
-                                        size="sm"
-                                        class="tp-run-btn"
-                                        onclick={(e) => { e.stopPropagation(); handleRunTest(item); }}
-                                        disabled={isRunning || !resolvedAppmixerPath || authStatus === 'invalid' || authStatus === 'needs-auth'}
-                                        title={authStatus === 'invalid' || authStatus === 'needs-auth' ? 'Auth required — validate auth first' : 'Run test'}
-                                >
-                                    {#if isRunning}
-                                        <Loader2 class="h-3.5 w-3.5 spinning"/>
-                                    {:else}
+                            {#if !item.ignored}
+                                {#if aiTestRunning === item.name}
+                                    <Badge variant="secondary" class="tp-ai-running-badge">
+                                        <Loader2 class="h-3 w-3 spinning"/>
+                                        AI running
+                                    </Badge>
+                                    <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            class="tp-run-btn"
+                                            onclick={(e) => { e.stopPropagation(); openPopup(); }}
+                                            title="View AI test output"
+                                    >
+                                        <ExternalLink class="h-3.5 w-3.5"/>
+                                    </Button>
+                                    <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            class="tp-run-btn tp-stop-btn"
+                                            onclick={(e) => { e.stopPropagation(); stopAiTest(); }}
+                                            title="Stop AI test"
+                                    >
+                                        <Square class="h-3.5 w-3.5"/>
+                                    </Button>
+                                {:else if isRunning}
+                                    <Badge variant="secondary" class="tp-ai-running-badge">
+                                        <Loader2 class="h-3 w-3 spinning"/>
+                                        Running
+                                    </Badge>
+                                    <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            class="tp-run-btn"
+                                            onclick={(e) => { e.stopPropagation(); openPopup(); }}
+                                            title="View test output"
+                                    >
+                                        <ExternalLink class="h-3.5 w-3.5"/>
+                                    </Button>
+                                    <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            class="tp-run-btn tp-stop-btn"
+                                            onclick={(e) => { e.stopPropagation(); stopTest(); }}
+                                            title="Stop test"
+                                    >
+                                        <Square class="h-3.5 w-3.5"/>
+                                    </Button>
+                                {:else}
+                                    <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            class="tp-run-btn"
+                                            onclick={(e) => { e.stopPropagation(); handleRunTest(item); }}
+                                            disabled={runningTests.size > 0 || aiTestRunning !== null || authStatus === 'invalid' || authStatus === 'needs-auth'}
+                                            title={authStatus === 'invalid' || authStatus === 'needs-auth' ? 'Auth required — validate auth first' : 'Run test'}
+                                    >
                                         <Play class="h-3.5 w-3.5"/>
-                                    {/if}
-                                </Button>
-                                <Button
-                                        variant="ghost"
-                                        size="sm"
-                                        class="tp-run-btn tp-ai-btn"
-                                        onclick={(e) => { e.stopPropagation(); runAiTest(item.name); }}
-                                        disabled={aiTestRunning !== null || !resolvedNodePath || authStatus === 'invalid' || authStatus === 'needs-auth'}
-                                        title={authStatus === 'invalid' || authStatus === 'needs-auth' ? 'Auth required — validate auth first' : 'Run AI-powered test (LangGraph agent)'}
-                                >
-                                    {#if aiTestRunning === item.name}
-                                        <Loader2 class="h-3.5 w-3.5 spinning"/>
-                                    {:else}
+                                    </Button>
+                                    <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            class="tp-run-btn tp-ai-btn"
+                                            onclick={(e) => { e.stopPropagation(); runAiTest(item.name); }}
+                                            disabled={runningTests.size > 0 || aiTestRunning !== null || authStatus === 'invalid' || authStatus === 'needs-auth'}
+                                            title={authStatus === 'invalid' || authStatus === 'needs-auth' ? 'Auth required — validate auth first' : 'Run AI-powered test'}
+                                    >
                                         <Bot class="h-3.5 w-3.5"/>
-                                    {/if}
-                                </Button>
+                                    </Button>
+                                {/if}
                             {/if}
                         </div>
                     </button>
@@ -1232,7 +1138,7 @@
                                                         {/if}
                                                         <span class="tp-cmd-exit-code">exit {cmd.exitCode}</span>
                                                     {/if}
-                                                    {#if isTauri}
+                                                    {#if true}
                                                         <button
                                                                 class="tp-cmd-action"
                                                                 onclick={(e) => { e.stopPropagation(); copyCommand(cmd, cmdKey); }}
@@ -1282,14 +1188,14 @@
                                                         <div class="tp-output-section">
                                                             <div class="tp-output-label">stdout</div>
                                                             <pre class="tp-output-pre"
-                                                                 use:autoScroll={cmd.stdout}>{stripAnsi(cmd.stdout)}</pre>
+                                                                 >{stripAnsi(cmd.stdout)}</pre>
                                                         </div>
                                                     {/if}
                                                     {#if cmd.stderr}
                                                         <div class="tp-output-section">
                                                             <div class="tp-output-label stderr">stderr</div>
                                                             <pre class="tp-output-pre stderr"
-                                                                 use:autoScroll={cmd.stderr}>{stripAnsi(cmd.stderr)}</pre>
+                                                                 >{stripAnsi(cmd.stderr)}</pre>
                                                         </div>
                                                     {/if}
                                                     {#if isRunningCmd && !cmd.stdout && !cmd.stderr}
@@ -1736,6 +1642,7 @@
         white-space: pre-wrap;
         word-break: break-word;
         overflow-y: auto;
+        max-height: 300px;
         background: #0d1117;
         color: #c9d1d9;
     }
@@ -1800,102 +1707,22 @@
         color: #7c3aed;
     }
 
-    /* AI Resize Handle */
-    .tp-ai-resize-handle {
-        height: 5px;
-        cursor: ns-resize;
-        background: #161b22;
-        border-bottom: 1px solid #30363d;
-        flex-shrink: 0;
-        position: relative;
-    }
-
-    .tp-ai-resize-handle::after {
-        content: '';
-        position: absolute;
-        left: 50%;
-        top: 50%;
-        transform: translate(-50%, -50%);
-        width: 32px;
-        height: 3px;
-        border-radius: 2px;
-        background: #484f58;
-    }
-
-    .tp-ai-resize-handle:hover,
-    .tp-ai-resize-handle:active {
-        background: #1f2937;
-    }
-
-    .tp-ai-resize-handle:hover::after,
-    .tp-ai-resize-handle:active::after {
-        background: #8b949e;
-    }
-
-    /* AI Output Panel */
-    .tp-ai-output-panel {
-        flex-shrink: 0;
-        min-height: 150px;
-        background: #0d1117;
-        display: flex;
-        flex-direction: column;
-        overflow: hidden;
-    }
-
-    .tp-ai-output-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 6px 10px;
-        background: #161b22;
-        border-bottom: 1px solid #30363d;
-        flex-shrink: 0;
-    }
-
-    .tp-ai-output-title {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        font-size: 11px;
-        font-weight: 600;
-        color: #c9d1d9;
-    }
-
-    .tp-ai-output-title :global(svg) {
+    /* AI running badge in row */
+    :global(.tp-ai-running-badge) {
+        font-size: 10px;
+        height: 18px;
+        padding: 0 6px;
+        gap: 4px;
         color: #8b5cf6;
     }
 
-    :global(.tp-ai-badge) {
-        font-size: 9px;
-        height: 18px;
-        gap: 4px;
+    /* Stop button */
+    :global(.tp-stop-btn svg) {
+        color: #ef4444;
     }
 
-    .tp-ai-output-actions {
-        display: flex;
-        align-items: center;
-        gap: 4px;
-    }
-
-    :global(.tp-popup-btn) {
-        color: #8b949e !important;
-    }
-
-    :global(.tp-popup-btn:hover) {
-        color: #c9d1d9 !important;
-    }
-
-    .tp-ai-output-pre {
-        font-family: monospace;
-        font-size: 10px;
-        line-height: 1.5;
-        padding: 8px 10px;
-        margin: 0;
-        white-space: pre-wrap;
-        word-break: break-word;
-        overflow-y: auto;
-        color: #c9d1d9;
-        flex: 1;
+    :global(.tp-stop-btn:hover svg) {
+        color: #dc2626;
     }
 
     :global(.tp-cmd-running-icon) {
