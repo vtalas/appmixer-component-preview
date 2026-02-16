@@ -5,13 +5,12 @@
 	"type": "module",
 	"scripts": {
 		"dev": "vite dev --port 5151",
-		"build": "npm run generate-data && vite build",
+		"build": "vite build",
 		"preview": "vite preview",
 		"start": "node build",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./jsconfig.json",
-		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./jsconfig.json --watch",
-		"generate-data": "node scripts/generate-data.js"
+		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./jsconfig.json --watch"
 	},
 	"devDependencies": {
 		"@internationalized/date": "^3.10.1",

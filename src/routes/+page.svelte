@@ -59,6 +59,17 @@
 		return null;
 	}
 
+	// Helper to find a component by connector name + component name (without module)
+	function findComponentByRoute(connectorName, componentName) {
+		const connector = currentTree.connectors.find(c => c.name === connectorName);
+		if (!connector) return null;
+		for (const module of connector.modules) {
+			const component = module.components.find(c => c.name === componentName);
+			if (component) return component;
+		}
+		return null;
+	}
+
 	// Get connector for the selected component (reactive)
 	let selectedConnector = $derived.by(() => {
 		if (!selectedComponent) return null;
@@ -73,13 +84,19 @@
 		expandedModules = new Set([...expandedModules, `${connectorName}/${moduleName}`]);
 	}
 
-	// Read initial state from URL hash on mount
+	// Parse /connector/<connectorName>/<componentName> from pathname
+	function parseRoute(pathname) {
+		const match = pathname.match(/^\/connector\/([^/]+)\/([^/]+)\/?$/);
+		if (!match) return null;
+		return { connector: decodeURIComponent(match[1]), component: decodeURIComponent(match[2]) };
+	}
+
+	// Read initial state from URL on mount
 	function initFromUrl() {
 		if (!browser) return;
-		const hash = window.location.hash.slice(1); // Remove the '#'
-		if (hash) {
-			const path = decodeURIComponent(hash);
-			const component = findComponentByPath(path);
+		const route = parseRoute(window.location.pathname);
+		if (route) {
+			const component = findComponentByRoute(route.connector, route.component);
 			if (component) {
 				selectedComponent = component;
 				expandTreeForComponent(component);
@@ -91,13 +108,14 @@
 	function updateUrl(component) {
 		if (!browser) return;
 		if (component) {
-			const newHash = `#${encodeURIComponent(component.path)}`;
-			if (window.location.hash !== newHash) {
-				window.history.pushState(null, '', newHash);
+			const [connectorName] = component.path.split('/');
+			const newPath = `/connector/${encodeURIComponent(connectorName)}/${encodeURIComponent(component.name)}`;
+			if (window.location.pathname !== newPath) {
+				window.history.pushState(null, '', newPath);
 			}
 		} else {
-			if (window.location.hash) {
-				window.history.pushState(null, '', window.location.pathname);
+			if (window.location.pathname !== '/') {
+				window.history.pushState(null, '', '/');
 			}
 		}
 	}
@@ -108,21 +126,28 @@
 
 		// Listen for browser back/forward navigation
 		const handlePopState = () => {
-			const hash = window.location.hash.slice(1);
-			if (hash) {
-				const path = decodeURIComponent(hash);
-				const component = findComponentByPath(path);
+			const route = parseRoute(window.location.pathname);
+			if (route) {
+				const component = findComponentByRoute(route.connector, route.component);
 				if (component) {
 					selectedComponent = component;
 					expandTreeForComponent(component);
+					return;
 				}
-			} else {
-				selectedComponent = null;
 			}
+			selectedComponent = null;
 		};
 
 		window.addEventListener('popstate', handlePopState);
 		return () => window.removeEventListener('popstate', handlePopState);
+	});
+
+	// Re-check URL when tree loads (tree may not be ready on initial mount)
+	$effect(() => {
+		const connectors = currentTree.connectors;
+		if (connectors.length > 0 && !selectedComponent) {
+			untrack(() => initFromUrl());
+		}
 	});
 
 	let filteredTree = $derived.by(() => {
