@@ -17,12 +17,9 @@
 		"@sveltejs/kit": "^2.50.1",
 		"@sveltejs/vite-plugin-svelte": "^6.2.4",
 		"@tailwindcss/vite": "^4.1.18",
-		"react": "^19.2.4",
-		"react-dom": "^19.2.4",
 		"svelte": "^5.48.2",
 		"svelte-check": "^4.3.5",
 		"tailwindcss": "^4.1.18",
-		"vibe-kanban-web-companion": "^0.0.5",
 		"vite": "^7.3.1"
 	},
 	"dependencies": {

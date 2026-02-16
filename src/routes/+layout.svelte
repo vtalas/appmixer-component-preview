@@ -1,8 +1,6 @@
 <script>
 	import '../app.css';
 	import favicon from '$lib/assets/favicon.svg';
-	import VibeKanbanWrapper from '$lib/components/VibeKanbanWrapper.svelte';
-	import { dev } from '$app/environment';
 
 	let { children } = $props();
 </script>
@@ -12,7 +10,3 @@
 </svelte:head>
 
 {@render children()}
-
-{#if dev}
-	<VibeKanbanWrapper />
-{/if}
