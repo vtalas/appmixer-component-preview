@@ -8,6 +8,7 @@
 	import ComponentPreview from '$lib/components/ComponentPreview.svelte';
 	import AiChatPanel from '$lib/components/AiChatPanel.svelte';
 	import TestPlanViewer from '$lib/components/TestPlanViewer.svelte';
+	import ConnectorDashboard from '$lib/components/ConnectorDashboard.svelte';
 
 	import { browser } from '$app/environment';
 	import { onMount, untrack } from 'svelte';
@@ -15,6 +16,7 @@
 
 	let searchQuery = $state('');
 	let selectedComponent = $state(null);
+	let selectedDashboardConnector = $state(null);
 	let expandedConnectors = $state(new Set());
 	let expandedModules = $state(new Set());
 	let showAiPanel = $state(false);
@@ -83,11 +85,17 @@
 		expandedModules = new Set([...expandedModules, `${connectorName}/${moduleName}`]);
 	}
 
-	// Parse /connector/<connectorName>/<componentName> from pathname
+	// Parse /connector/<connectorName>[/<componentName>] from pathname
 	function parseRoute(pathname) {
-		const match = pathname.match(/^\/connector\/([^/]+)\/([^/]+)\/?$/);
-		if (!match) return null;
-		return { connector: decodeURIComponent(match[1]), component: decodeURIComponent(match[2]) };
+		const componentMatch = pathname.match(/^\/connector\/([^/]+)\/([^/]+)\/?$/);
+		if (componentMatch) {
+			return { connector: decodeURIComponent(componentMatch[1]), component: decodeURIComponent(componentMatch[2]) };
+		}
+		const dashboardMatch = pathname.match(/^\/connector\/([^/]+)\/?$/);
+		if (dashboardMatch) {
+			return { connector: decodeURIComponent(dashboardMatch[1]), dashboard: true };
+		}
+		return null;
 	}
 
 	// Read initial state from URL on mount
@@ -95,20 +103,35 @@
 		if (!browser) return;
 		const route = parseRoute(window.location.pathname);
 		if (route) {
-			const component = findComponentByRoute(route.connector, route.component);
-			if (component) {
-				selectedComponent = component;
-				expandTreeForComponent(component);
+			if (route.dashboard) {
+				const connector = currentTree.connectors.find(c => c.name === route.connector);
+				if (connector) {
+					selectedDashboardConnector = connector;
+					selectedComponent = null;
+					expandedConnectors = new Set([...expandedConnectors, connector.name]);
+				}
+			} else {
+				const component = findComponentByRoute(route.connector, route.component);
+				if (component) {
+					selectedComponent = component;
+					selectedDashboardConnector = null;
+					expandTreeForComponent(component);
+				}
 			}
 		}
 	}
 
 	// Update URL when selection changes
-	function updateUrl(component) {
+	function updateUrl(component, dashboardConnector = null) {
 		if (!browser) return;
 		if (component) {
 			const [connectorName] = component.path.split('/');
 			const newPath = `/connector/${encodeURIComponent(connectorName)}/${encodeURIComponent(component.name)}`;
+			if (window.location.pathname !== newPath) {
+				window.history.pushState(null, '', newPath);
+			}
+		} else if (dashboardConnector) {
+			const newPath = `/connector/${encodeURIComponent(dashboardConnector.name)}`;
 			if (window.location.pathname !== newPath) {
 				window.history.pushState(null, '', newPath);
 			}
@@ -127,14 +150,26 @@
 		const handlePopState = () => {
 			const route = parseRoute(window.location.pathname);
 			if (route) {
-				const component = findComponentByRoute(route.connector, route.component);
-				if (component) {
-					selectedComponent = component;
-					expandTreeForComponent(component);
-					return;
+				if (route.dashboard) {
+					const connector = currentTree.connectors.find(c => c.name === route.connector);
+					if (connector) {
+						selectedDashboardConnector = connector;
+						selectedComponent = null;
+						expandedConnectors = new Set([...expandedConnectors, connector.name]);
+						return;
+					}
+				} else {
+					const component = findComponentByRoute(route.connector, route.component);
+					if (component) {
+						selectedComponent = component;
+						selectedDashboardConnector = null;
+						expandTreeForComponent(component);
+						return;
+					}
 				}
 			}
 			selectedComponent = null;
+			selectedDashboardConnector = null;
 		};
 
 		window.addEventListener('popstate', handlePopState);
@@ -144,7 +179,7 @@
 	// Re-check URL when tree loads (tree may not be ready on initial mount)
 	$effect(() => {
 		const connectors = currentTree.connectors;
-		if (connectors.length > 0 && !selectedComponent) {
+		if (connectors.length > 0 && !selectedComponent && !selectedDashboardConnector) {
 			untrack(() => initFromUrl());
 		}
 	});
@@ -219,12 +254,22 @@
 			await fileSync.loadComponentFromDirectory(component.path);
 		}
 		selectedComponent = component;
+		selectedDashboardConnector = null;
 		updateUrl(component);
 	}
 
 	function closeEditor() {
 		selectedComponent = null;
+		selectedDashboardConnector = null;
 		updateUrl(null);
+	}
+
+	function selectConnectorDashboard(connector) {
+		selectedDashboardConnector = connector;
+		selectedComponent = null;
+		// Also expand the connector in the sidebar
+		expandedConnectors = new Set([...expandedConnectors, connector.name]);
+		updateUrl(null, connector);
 	}
 
 	// Expand all when searching
@@ -786,7 +831,7 @@
 	// Auto-load test plan when connector changes.
 	// Use $derived for the connector name so the effect only re-runs when
 	// the connector actually changes — not on every selectedComponent mutation.
-	let activeConnectorName = $derived(selectedConnector?.name ?? null);
+	let activeConnectorName = $derived(selectedConnector?.name ?? selectedDashboardConnector?.name ?? null);
 	let isConnected = $derived(fileSync.isConnected);
 	$effect(() => {
 		const name = activeConnectorName;
@@ -801,6 +846,30 @@
 			});
 		}
 	});
+
+	// Handle full JSON replacement from Component JSON tab
+	function handleJsonChange(newJson) {
+		if (!selectedComponent || !newJson || typeof newJson !== 'object') return;
+
+		// Replace all top-level keys
+		const current = selectedComponent.componentJson;
+		// Remove keys not in newJson
+		for (const key of Object.keys(current)) {
+			if (!(key in newJson)) {
+				delete current[key];
+			}
+		}
+		// Set all keys from newJson
+		for (const [key, value] of Object.entries(newJson)) {
+			current[key] = value;
+		}
+
+		// Mark as dirty
+		fileSync.markComponentDirty(selectedComponent.path);
+
+		// Force reactivity
+		selectedComponent = selectedComponent;
+	}
 
 	// Handle source changes for dynamic options
 	function handleSourceChange(portName, inputKey, source) {
@@ -925,24 +994,28 @@
 						open={expandedConnectors.has(connector.name)}
 						onOpenChange={() => toggleConnector(connector.name)}
 					>
-						<Collapsible.Trigger class="tree-item connector-item">
-							<ChevronRight
-								class="tree-chevron {expandedConnectors.has(connector.name) ? 'expanded' : ''}"
-							/>
-							{#if connector.icon}
-								<img
-									src={connector.icon}
-									alt=""
-									class="connector-icon"
+						<div class="tree-item connector-item {selectedDashboardConnector?.name === connector.name ? 'selected' : ''}">
+							<Collapsible.Trigger class="connector-chevron">
+								<ChevronRight
+									class="tree-chevron {expandedConnectors.has(connector.name) ? 'expanded' : ''}"
 								/>
-							{:else}
-								<Package class="tree-icon" />
-							{/if}
-							<span class="tree-label">{connector.label || connector.name}</span>
-							<Badge variant="secondary" class="tree-badge">
-								{connector.modules.reduce((acc, m) => acc + m.components.length, 0)}
-							</Badge>
-						</Collapsible.Trigger>
+							</Collapsible.Trigger>
+							<button class="connector-name-btn" onclick={() => selectConnectorDashboard(connector)}>
+								{#if connector.icon}
+									<img
+										src={connector.icon}
+										alt=""
+										class="connector-icon"
+									/>
+								{:else}
+									<Package class="tree-icon" />
+								{/if}
+								<span class="tree-label">{connector.label || connector.name}</span>
+								<Badge variant="secondary" class="tree-badge">
+									{connector.modules.reduce((acc, m) => acc + m.components.length, 0)}
+								</Badge>
+							</button>
+						</div>
 						<Collapsible.Content>
 							<div class="tree-children">
 								{#each connector.modules as module}
@@ -1007,7 +1080,21 @@
 
 	<!-- Main Content -->
 	<div class="main-content">
-		{#if selectedComponent}
+		{#if selectedDashboardConnector}
+			<ConnectorDashboard
+				connector={selectedDashboardConnector}
+				{testPlanData}
+				onComponentSelect={selectComponent}
+				onViewTestPlan={testPlanData ? () => {
+					// Select the first component to enter the editor, then switch to test plan tab
+					const firstComp = selectedDashboardConnector.modules[0]?.components[0];
+					if (firstComp) {
+						selectComponent(firstComp);
+						activeTab = 'testplan';
+					}
+				} : null}
+			/>
+		{:else if selectedComponent}
 			{@const comp = selectedComponent.componentJson}
 			<div class="editor-panel">
 				<!-- Editor Header -->
@@ -1317,6 +1404,7 @@
 									onOptionsChange={handleOptionsChange}
 									onFieldsChange={handleFieldsChange}
 									onSourceChange={handleSourceChange}
+									onJsonChange={handleJsonChange}
 								/>
 							</div>
 						{:else if activeTab === 'testplan' && testPlanData && testPlanConnector}
@@ -1576,6 +1664,38 @@
 
 	.tree-children {
 		margin-left: 20px;
+	}
+
+	/* Connector sidebar item: split chevron and name */
+	:global(.connector-chevron) {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+		border: none;
+		background: transparent;
+		cursor: pointer;
+		padding: 2px;
+		border-radius: var(--radius-sm);
+	}
+
+	:global(.connector-chevron:hover) {
+		background: var(--color-accent);
+	}
+
+	.connector-name-btn {
+		flex: 1;
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		border: none;
+		background: transparent;
+		cursor: pointer;
+		font-size: 13px;
+		text-align: left;
+		padding: 0;
+		min-width: 0;
+		color: inherit;
 	}
 
 	/* Main Content */
