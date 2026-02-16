@@ -24,9 +24,6 @@
     } from 'lucide-svelte';
     import { createCommandRunner, stripAnsi } from '$lib/utils/commandRunner.svelte.js';
 
-    // Server-ready state
-    let serverReady = $state(true);
-
     let { testPlan, connectorName, connectorsDir, onTestPlanUpdated, onReloadTestPlan } = $props();
 
     let filterMode = $state('all');
@@ -111,33 +108,6 @@
         return cmd.command || cmd.cmd;
     }
 
-
-    // Extract meaningful output from stdout (skip boilerplate), with max length cap
-    function extractOutput(stdout, maxLen = 5000) {
-        const clean = stripAnsi(stdout);
-        let output;
-        // Find the actual component output
-        const outputMatch = clean.match(/Component has send a message to output port: \w+\n([\s\S]*?)(?:\n\nComponent's receive method|\n\nStopping component|$)/);
-        if (outputMatch) {
-            output = outputMatch[1].trim();
-        } else {
-            // If not found, look for error-like content
-            const lines = clean.split('\n').filter(l => l.trim());
-            const meaningfulStart = lines.findIndex(l =>
-                l.includes('Component has send') ||
-                l.includes('Error') ||
-                l.includes('error') ||
-                l.includes('Component\'s receive')
-            );
-            output = meaningfulStart >= 0
-                ? lines.slice(meaningfulStart).join('\n')
-                : clean;
-        }
-        if (output.length > maxLen) {
-            return output.slice(0, maxLen) + `\n\n… (${output.length - maxLen} more characters)`;
-        }
-        return output;
-    }
 
     /**
      * Resolve the full component path from a test plan item.

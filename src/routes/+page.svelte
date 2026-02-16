@@ -35,7 +35,6 @@
 	let authLoginResult = $state(null);
 	let authCopied = $state(false);
 	let authCheckingConnector = null; // non-reactive guard
-	let authChildProcess = null; // Tauri Child process ref for cancellation
 
 	// Auto-restore last folder on mount
 	onMount(() => {
@@ -601,10 +600,6 @@
 	}
 
 	async function cancelAuthLogin() {
-		if (authChildProcess) {
-			try { authChildProcess.kill(); } catch { /* ignore */ }
-			authChildProcess = null;
-		}
 		await killPort2300();
 		if (authLoginRunning) {
 			authLoginRunning = false;
@@ -1586,7 +1581,6 @@
 	/* Main Content */
 	.main-content {
 		flex: 1;
-		height: calc(100vh - 49px); /* Account for toolbar height */
 		display: flex;
 		flex-direction: column;
 		overflow: hidden;
