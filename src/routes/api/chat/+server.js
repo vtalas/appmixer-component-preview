@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 
 export const POST = async ({ request }) => {
-	const { prompt, sessionId, cwd } = await request.json();
+	const { prompt, sessionId, cwd, allowedTools } = await request.json();
 
 	if (!prompt || typeof prompt !== 'string') {
 		return new Response(JSON.stringify({ error: 'prompt is required' }), {
@@ -18,6 +18,13 @@ export const POST = async ({ request }) => {
 
 	if (sessionId) {
 		args.push('--session-id', sessionId);
+	}
+
+	// Pre-approve tools to avoid interactive approval prompts
+	if (Array.isArray(allowedTools) && allowedTools.length > 0) {
+		for (const tool of allowedTools) {
+			args.push('--allowedTools', tool);
+		}
 	}
 
 	const child = spawn('claude', args, {

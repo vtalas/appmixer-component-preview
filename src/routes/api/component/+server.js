@@ -42,8 +42,10 @@ export const PUT = async ({ request, url }) => {
         return json({ error: 'componentJson is required' }, { status: 400 });
     }
 
-    const filePath = path.join(dir, componentPath, 'component.json');
+    const componentDir = path.join(dir, componentPath);
+    const filePath = path.join(componentDir, 'component.json');
     try {
+        fs.mkdirSync(componentDir, { recursive: true });
         fs.writeFileSync(filePath, JSON.stringify(componentJson, null, 4), 'utf-8');
         return json({ success: true });
     } catch (err) {

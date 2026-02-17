@@ -3,12 +3,12 @@
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
 	import * as Collapsible from '$lib/components/ui/collapsible';
 	import { Badge } from '$lib/components/ui/badge';
-	import { ChevronRight, Search, Package, Folder, Box, X, Save, AlertCircle, FolderSync, Circle, RotateCw, Loader2, MessageSquare, FlaskConical, Sparkles, ShieldAlert, ShieldCheck, Copy, Check } from 'lucide-svelte';
+	import { ChevronRight, Search, Package, Folder, Box, X, Save, AlertCircle, FolderSync, Circle, RotateCw, Loader2, MessageSquare, ShieldAlert, ShieldCheck, Copy, Check, Settings } from 'lucide-svelte';
 	import { Button } from '$lib/components/ui/button';
 	import ComponentPreview from '$lib/components/ComponentPreview.svelte';
 	import AiChatPanel from '$lib/components/AiChatPanel.svelte';
-	import TestPlanViewer from '$lib/components/TestPlanViewer.svelte';
 	import ConnectorDashboard from '$lib/components/ConnectorDashboard.svelte';
+	import SettingsPanel from '$lib/components/SettingsPanel.svelte';
 
 	import { browser } from '$app/environment';
 	import { onMount, untrack } from 'svelte';
@@ -17,10 +17,10 @@
 	let searchQuery = $state('');
 	let selectedComponent = $state(null);
 	let selectedDashboardConnector = $state(null);
+	let showSettings = $state(false);
 	let expandedConnectors = $state(new Set());
 	let expandedModules = $state(new Set());
 	let showAiPanel = $state(false);
-	let activeTab = $state('properties');
 	let testPlanData = $state(null);
 	let testPlanLoading = $state(false);
 	let testPlanConnector = $state(null);
@@ -511,16 +511,6 @@
 		selectedComponent = selectedComponent;
 	}
 
-	// Test plan tab stats
-	let testPlanStats = $derived.by(() => {
-		if (!testPlanData) return { passed: 0, failed: 0, total: 0 };
-		return {
-			passed: testPlanData.filter((t) => t.status === 'passed').length,
-			failed: testPlanData.filter((t) => t.status === 'failed').length,
-			total: testPlanData.length
-		};
-	});
-
 	// ── Test Plan ────────────────────────────────────────────────────────
 	async function loadTestPlanForConnector(connectorName) {
 		if (testPlanConnector === connectorName && testPlanData !== null) return;
@@ -603,7 +593,6 @@
 							planningOutput += `\n[PLANNING] Process exited with code ${event.code}\n`;
 							if (event.code === 0) {
 								await handleReloadTestPlan();
-								activeTab = 'testplan';
 							} else {
 								planningError = `Planning agent exited with code ${event.code}`;
 							}
@@ -933,6 +922,14 @@
 						Save All ({fileSync.state.modifiedComponents.size})
 					</Button>
 				{/if}
+				<Button
+					variant={showSettings ? 'secondary' : 'outline'}
+					size="sm"
+					onclick={() => { showSettings = !showSettings; if (showSettings) { selectedComponent = null; selectedDashboardConnector = null; updateUrl(null); } }}
+					title="Settings"
+				>
+					<Settings class="h-4 w-4" />
+				</Button>
 			</div>
 			<div class="file-toolbar-right">
 				{#if fileSync.state.directoryName}
@@ -1080,19 +1077,26 @@
 
 	<!-- Main Content -->
 	<div class="main-content">
-		{#if selectedDashboardConnector}
+		{#if showSettings}
+			<SettingsPanel onBack={() => showSettings = false} />
+		{:else if selectedDashboardConnector}
 			<ConnectorDashboard
 				connector={selectedDashboardConnector}
 				{testPlanData}
+				testPlanLoading={testPlanLoading}
+				testPlanConnector={testPlanConnector}
+				connectorsDir={fileSync.directoryPath || ''}
+				isConnected={fileSync.isConnected}
 				onComponentSelect={selectComponent}
-				onViewTestPlan={testPlanData ? () => {
-					// Select the first component to enter the editor, then switch to test plan tab
-					const firstComp = selectedDashboardConnector.modules[0]?.components[0];
-					if (firstComp) {
-						selectComponent(firstComp);
-						activeTab = 'testplan';
-					}
-				} : null}
+				onTestPlanUpdated={handleTestPlanUpdated}
+				onReloadTestPlan={handleReloadTestPlan}
+				onGenerateTestPlan={generateTestPlan}
+				planningRunning={planningRunning}
+				planningOutput={planningOutput}
+				planningError={planningError}
+				onClearPlanning={() => { planningOutput = ''; planningError = null; }}
+				onRefreshTree={() => fileSync.scanConnectorsDirectory()}
+				onOpenSettings={() => { showSettings = true; selectedComponent = null; selectedDashboardConnector = null; updateUrl(null); }}
 			/>
 		{:else if selectedComponent}
 			{@const comp = selectedComponent.componentJson}
@@ -1345,111 +1349,21 @@
 					</div>
 				{/if}
 
-				<!-- Tabs: Properties / Test Plan -->
-				{#if testPlanData || (!testPlanData && fileSync.isConnected && activeConnectorName)}
-					<div class="editor-tabs">
-						<button
-							class="editor-tab {activeTab === 'properties' ? 'active' : ''}"
-							onclick={() => activeTab = 'properties'}
-						>
-							<Package class="h-3.5 w-3.5" />
-							Properties
-						</button>
-						{#if testPlanData}
-							<button
-								class="editor-tab {activeTab === 'testplan' ? 'active' : ''}"
-								onclick={() => activeTab = 'testplan'}
-							>
-								<FlaskConical class="h-3.5 w-3.5" />
-								Test Plan
-								{#if testPlanStats.passed > 0 || testPlanStats.failed > 0}
-									<span class="tab-stats">
-										{#if testPlanStats.passed > 0}<span class="tab-passed">{testPlanStats.passed}</span>{/if}
-										{#if testPlanStats.failed > 0}<span class="tab-failed">{testPlanStats.failed}</span>{/if}
-										/ {testPlanStats.total}
-									</span>
-								{/if}
-							</button>
-						{:else if !testPlanData && fileSync.isConnected && activeConnectorName}
-							<button
-								class="editor-tab generate-tab"
-								onclick={generateTestPlan}
-								disabled={planningRunning || testPlanLoading}
-							>
-								{#if planningRunning}
-									<Loader2 class="h-3.5 w-3.5 spinning" />
-									Generating...
-								{:else if testPlanLoading}
-									<Loader2 class="h-3.5 w-3.5 spinning" />
-									Loading...
-								{:else}
-									<Sparkles class="h-3.5 w-3.5" />
-									Generate Test Plan
-								{/if}
-							</button>
-						{/if}
-					</div>
-				{/if}
-
-				<!-- Tab Content + AI Side Panel -->
+				<!-- Component Properties + AI Side Panel -->
 				<div class="editor-body-wrapper">
 					<div class="editor-body">
-						{#if activeTab === 'properties' || !testPlanData}
-							<div class="properties-scroll">
-								<ComponentPreview
-									componentJson={comp}
-									onInspectorInputChange={handleInspectorInputChange}
-									onRequiredChange={handleRequiredChange}
-									onTypeChange={handleTypeChange}
-									onOptionsChange={handleOptionsChange}
-									onFieldsChange={handleFieldsChange}
-									onSourceChange={handleSourceChange}
-									onJsonChange={handleJsonChange}
-								/>
-							</div>
-						{:else if activeTab === 'testplan' && testPlanData && testPlanConnector}
-							<div class="test-plan-main">
-								<TestPlanViewer
-									testPlan={testPlanData}
-									connectorName={testPlanConnector}
-									connectorsDir={fileSync.directoryPath || ''}
-									onTestPlanUpdated={handleTestPlanUpdated}
-									onReloadTestPlan={handleReloadTestPlan}
-								/>
-							</div>
-						{/if}
-
-						{#if planningRunning || planningOutput}
-							<div class="planning-output-panel">
-								<div class="planning-output-header">
-									<div class="planning-output-title">
-										<Sparkles class="h-3.5 w-3.5" />
-										<span>Planning Agent</span>
-										{#if planningRunning}
-											<span class="planning-badge running">
-												<Loader2 class="h-3 w-3 spinning" />
-												running
-											</span>
-										{:else}
-											<span class="planning-badge done">done</span>
-										{/if}
-									</div>
-									{#if !planningRunning}
-										<button
-											class="planning-close-btn"
-											onclick={() => { planningOutput = ''; planningError = null; }}
-											title="Close"
-										>
-											<X class="h-3.5 w-3.5" />
-										</button>
-									{/if}
-								</div>
-								<pre class="planning-output-pre">{planningOutput}</pre>
-								{#if planningError}
-									<div class="planning-error">{planningError}</div>
-								{/if}
-							</div>
-						{/if}
+						<div class="properties-scroll">
+							<ComponentPreview
+								componentJson={comp}
+								onInspectorInputChange={handleInspectorInputChange}
+								onRequiredChange={handleRequiredChange}
+								onTypeChange={handleTypeChange}
+								onOptionsChange={handleOptionsChange}
+								onFieldsChange={handleFieldsChange}
+								onSourceChange={handleSourceChange}
+								onJsonChange={handleJsonChange}
+							/>
+						</div>
 					</div>
 					{#if showAiPanel}
 						<div class="ai-panel">
@@ -1823,64 +1737,6 @@
 		min-height: 0;
 	}
 
-	/* Editor Tabs */
-	.editor-tabs {
-		display: flex;
-		border-bottom: 1px solid var(--color-border);
-		background: var(--color-card);
-		flex-shrink: 0;
-	}
-
-	.editor-tab {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		padding: 8px 20px;
-		font-size: 13px;
-		font-weight: 500;
-		border: none;
-		background: transparent;
-		cursor: pointer;
-		color: var(--color-muted-foreground);
-		border-bottom: 2px solid transparent;
-		transition: all 0.15s ease;
-	}
-
-	.editor-tab:hover {
-		color: var(--color-foreground);
-		background: var(--color-muted);
-	}
-
-	.editor-tab.active {
-		color: var(--color-foreground);
-		border-bottom-color: var(--color-primary);
-	}
-
-	.tab-stats {
-		font-size: 11px;
-		font-weight: 400;
-		color: var(--color-muted-foreground);
-		margin-left: 2px;
-	}
-
-	.tab-passed {
-		color: #22c55e;
-		font-weight: 600;
-	}
-
-	.tab-failed {
-		color: #ef4444;
-		font-weight: 600;
-	}
-
-	.test-plan-main {
-		flex: 1;
-		display: flex;
-		flex-direction: column;
-		min-height: 0;
-		overflow: hidden;
-	}
-
 	.ai-panel {
 		width: 420px;
 		border-left: 1px solid var(--color-border);
@@ -1976,129 +1832,11 @@
 		max-width: 200px;
 	}
 
-	/* Generate Test Plan tab */
-	.editor-tab.generate-tab {
-		color: #8b5cf6;
-		border-bottom-color: transparent;
-	}
-
-	.editor-tab.generate-tab:hover {
-		color: #7c3aed;
-		background: rgba(139, 92, 246, 0.08);
-	}
-
-	.editor-tab.generate-tab:disabled {
-		opacity: 0.6;
-		cursor: default;
-	}
-
-	:global(.editor-tab.generate-tab .spinning) {
-		animation: spin 1s linear infinite;
-	}
-
 	.properties-scroll {
 		flex: 1;
 		overflow: auto;
 		padding: 20px;
 		min-height: 0;
-	}
-
-	/* Planning Output Panel */
-	.planning-output-panel {
-		flex-shrink: 0;
-		max-height: 40%;
-		display: flex;
-		flex-direction: column;
-		border-radius: var(--radius-md);
-		overflow: hidden;
-		background: #0d1117;
-		border: 1px solid #30363d;
-		margin: 0 8px 8px;
-	}
-
-	.planning-output-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: 6px 10px;
-		background: #161b22;
-		border-bottom: 1px solid #30363d;
-	}
-
-	.planning-output-title {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		font-size: 11px;
-		font-weight: 600;
-		color: #c9d1d9;
-	}
-
-	.planning-output-title :global(svg) {
-		color: #8b5cf6;
-	}
-
-	.planning-badge {
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-		font-size: 9px;
-		font-weight: 500;
-		padding: 1px 6px;
-		border-radius: 4px;
-		margin-left: 4px;
-	}
-
-	.planning-badge.running {
-		background: #21262d;
-		border: 1px solid #30363d;
-		color: #f59e0b;
-	}
-
-	.planning-badge.done {
-		background: #21262d;
-		border: 1px solid #30363d;
-		color: #8b949e;
-	}
-
-	.planning-close-btn {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 22px;
-		height: 22px;
-		border: none;
-		background: transparent;
-		cursor: pointer;
-		border-radius: var(--radius-sm);
-		color: #8b949e;
-	}
-
-	.planning-close-btn:hover {
-		background: #21262d;
-		color: #c9d1d9;
-	}
-
-	.planning-output-pre {
-		font-family: "SF Mono", "Fira Code", monospace;
-		font-size: 10px;
-		line-height: 1.5;
-		padding: 8px 10px;
-		margin: 0;
-		white-space: pre-wrap;
-		word-break: break-word;
-		overflow-y: auto;
-		flex: 1;
-		min-height: 0;
-		color: #c9d1d9;
-	}
-
-	.planning-error {
-		padding: 6px 10px;
-		font-size: 11px;
-		color: #f87171;
-		background: #1a0000;
-		border-top: 1px solid #30363d;
 	}
 
 	/* Auth Status */

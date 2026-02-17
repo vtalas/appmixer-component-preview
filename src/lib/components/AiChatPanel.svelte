@@ -13,10 +13,47 @@
 		Sparkles,
 		Copy,
 		Check,
-		Wrench
+		Wrench,
+		Terminal,
+		Globe,
+		RefreshCw
 	} from 'lucide-svelte';
+	import { onMount, onDestroy } from 'svelte';
 
-	let { onComponentGenerated, context = '' } = $props();
+	let {
+		onComponentGenerated,
+		context = '',
+		cwd = '',
+		storageKey = '',
+		onDone,
+		allowedTools = []
+	} = $props();
+
+	// ── Session persistence ──────────────────────────────────────────────
+	// Module-level Map keeps chat sessions alive across mount/unmount cycles.
+	// Keyed by storageKey (e.g. connector name). Survives as long as the page
+	// is open; lost on full page reload (intentional — Claude session IDs
+	// survive server-side anyway via --session-id).
+	const sessionStore = globalThis.__aiChatSessions ??= new Map();
+
+	function saveSession() {
+		if (!storageKey) return;
+		sessionStore.set(storageKey, {
+			messages: messages.map(m => ({ ...m })),
+			sessionId,
+			inputValue
+		});
+	}
+
+	function restoreSession() {
+		if (!storageKey) return;
+		const saved = sessionStore.get(storageKey);
+		if (saved) {
+			messages = saved.messages;
+			sessionId = saved.sessionId;
+			inputValue = saved.inputValue || '';
+		}
+	}
 
 	let messages = $state([]);
 	let inputValue = $state('');
@@ -26,6 +63,25 @@
 	let chatContainer = $state(null);
 	let collapsed = $state(false);
 	let copiedIndex = $state(null);
+
+	// Terminal mode state
+	// Persist mode preference per storageKey
+	const modeStore = globalThis.__aiChatModeStore ??= new Map();
+	let useTerminal = $state(modeStore.get(storageKey) ?? false);
+	let terminalRunning = $state(false);
+	let terminalAbort = null;
+
+	$effect(() => {
+		if (storageKey) modeStore.set(storageKey, useTerminal);
+	});
+
+	onMount(() => {
+		restoreSession();
+	});
+
+	onDestroy(() => {
+		if (terminalAbort) terminalAbort.abort();
+	});
 
 	// Debug log visible in the UI (since DevTools may not be available).
 	// Toggle with the hidden ?debug query param or by clicking the header 5 times.
@@ -310,8 +366,145 @@ IMPORTANT: When generating a component.json, output ONLY the JSON wrapped in a m
 		scrollToBottom();
 	}
 
-	// ── Send message ─────────────────────────────────────────────────────
+	// ── Send to Terminal ─────────────────────────────────────────────────
+	async function sendToTerminal() {
+		const text = inputValue.trim();
+		if (!text || isStreaming || terminalRunning) return;
+
+		inputValue = '';
+
+		messages = [...messages, {
+			role: 'user',
+			content: text,
+			timestamp: new Date()
+		}];
+
+		// Add placeholder assistant message
+		messages = [...messages, {
+			role: 'assistant',
+			content: '',
+			timestamp: new Date(),
+			toolCalls: [],
+			isTerminal: true
+		}];
+
+		scrollToBottom();
+		terminalRunning = true;
+
+		const systemContext = buildSystemContext();
+		const fullPrompt = sessionId
+			? text
+			: `${systemContext}\n\n---\n\nUser request: ${text}`;
+
+		const state = {
+			assistantContent: '',
+			currentToolCalls: []
+		};
+
+		try {
+			// Launch Terminal.app with claude
+			const launchRes = await fetch('/api/terminal', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					prompt: fullPrompt,
+					sessionId,
+					cwd: cwd || undefined,
+					context: sessionId ? undefined : systemContext
+				})
+			});
+
+			if (!launchRes.ok) {
+				const data = await launchRes.json();
+				throw new Error(data.error || 'Failed to open terminal');
+			}
+
+			const { sessionId: sid, logFile } = await launchRes.json();
+			if (sid) sessionId = sid;
+
+			// Update the assistant message to show terminal status
+			const updated = [...messages];
+			updated[updated.length - 1] = {
+				...updated[updated.length - 1],
+				content: '_Running in Terminal.app — output will appear here as Claude works..._'
+			};
+			messages = updated;
+			scrollToBottom();
+
+			// Stream the terminal output via SSE
+			const controller = new AbortController();
+			terminalAbort = controller;
+
+			const outputRes = await fetch(`/api/terminal?sessionId=${encodeURIComponent(sid)}`, {
+				signal: controller.signal
+			});
+
+			if (outputRes.ok && outputRes.body) {
+				const reader = outputRes.body.getReader();
+				const decoder = new TextDecoder();
+				let buffer = '';
+
+				while (true) {
+					const { done, value } = await reader.read();
+					if (done) break;
+
+					buffer += decoder.decode(value, { stream: true });
+					const lines = buffer.split('\n\n');
+					buffer = lines.pop() || '';
+
+					for (const line of lines) {
+						if (!line.startsWith('data: ')) continue;
+						const jsonStr = line.slice(6);
+						try {
+							const event = JSON.parse(jsonStr);
+							if (event.type === 'terminal_done') {
+								// Terminal session finished
+								break;
+							}
+							if (processStreamEvent(event, state)) {
+								flushStreamState(state);
+							}
+						} catch {
+							// skip unparseable
+						}
+					}
+				}
+			}
+
+			// Check for component JSON in the output
+			const componentJson = extractComponentJson(state.assistantContent);
+			if (componentJson) {
+				const final = [...messages];
+				final[final.length - 1] = {
+					...final[final.length - 1],
+					componentJson
+				};
+				messages = final;
+			}
+		} catch (err) {
+			if (err instanceof Error && err.name !== 'AbortError') {
+				const updated = [...messages];
+				updated[updated.length - 1] = {
+					...updated[updated.length - 1],
+					content: `Error: ${err.message}`
+				};
+				messages = updated;
+			}
+		} finally {
+			terminalRunning = false;
+			terminalAbort = null;
+			saveSession();
+			onDone?.();
+			scrollToBottom();
+		}
+	}
+
+	// ── Send message (web mode) ─────────────────────────────────────────
 	async function sendMessage() {
+		if (useTerminal) {
+			return sendToTerminal();
+		}
+
 		const text = inputValue.trim();
 		if (!text || isStreaming) return;
 
@@ -356,7 +549,9 @@ IMPORTANT: When generating a component.json, output ONLY the JSON wrapped in a m
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
 					prompt: fullPrompt,
-					sessionId
+					sessionId,
+					...(cwd ? { cwd } : {}),
+					...(allowedTools.length > 0 ? { allowedTools } : {})
 				}),
 				signal: controller.signal
 			});
@@ -426,6 +621,8 @@ IMPORTANT: When generating a component.json, output ONLY the JSON wrapped in a m
 			isStreaming = false;
 			abortController = null;
 			scrollToBottom();
+			saveSession();
+			onDone?.();
 		}
 	}
 
@@ -501,25 +698,51 @@ IMPORTANT: When generating a component.json, output ONLY the JSON wrapped in a m
 </script>
 
 <div class="ai-chat-panel {collapsed ? 'collapsed' : ''}">
-	<button class="chat-header" onclick={() => { collapsed = !collapsed; onHeaderClick(); }}>
-		<div class="chat-header-left">
-			<Sparkles class="h-4 w-4" />
-			<span class="chat-title">AI Assistant</span>
-			{#if sessionId}
-				<Badge variant="outline" class="session-badge">Session active</Badge>
-			{/if}
-		</div>
-		<div class="chat-header-right">
-			{#if isStreaming}
-				<Loader2 class="h-4 w-4 spinning" />
-			{/if}
-			{#if collapsed}
-				<ChevronUp class="h-4 w-4" />
-			{:else}
-				<ChevronDown class="h-4 w-4" />
-			{/if}
-		</div>
-	</button>
+	<div class="chat-header-row">
+		<button class="chat-header" onclick={() => { collapsed = !collapsed; onHeaderClick(); }}>
+			<div class="chat-header-left">
+				<Sparkles class="h-4 w-4" />
+				<span class="chat-title">AI Assistant</span>
+				{#if sessionId}
+					<Badge variant="outline" class="session-badge">Session active</Badge>
+				{/if}
+				{#if terminalRunning}
+					<Badge variant="secondary" class="terminal-badge">
+						<Terminal class="h-3 w-3" />
+						Terminal
+					</Badge>
+				{/if}
+			</div>
+			<div class="chat-header-right">
+				{#if isStreaming || terminalRunning}
+					<Loader2 class="h-4 w-4 spinning" />
+				{/if}
+				{#if collapsed}
+					<ChevronUp class="h-4 w-4" />
+				{:else}
+					<ChevronDown class="h-4 w-4" />
+				{/if}
+			</div>
+		</button>
+		{#if !collapsed}
+			<div class="mode-toggle">
+				<button
+					class="mode-btn {!useTerminal ? 'active' : ''}"
+					onclick={() => useTerminal = false}
+					title="Web mode — runs in background"
+				>
+					<Globe class="h-3.5 w-3.5" />
+				</button>
+				<button
+					class="mode-btn {useTerminal ? 'active' : ''}"
+					onclick={() => useTerminal = true}
+					title="Terminal mode — opens Terminal.app for interactive use"
+				>
+					<Terminal class="h-3.5 w-3.5" />
+				</button>
+			</div>
+		{/if}
+	</div>
 
 	{#if !collapsed}
 		<div class="chat-body">
@@ -628,12 +851,16 @@ IMPORTANT: When generating a component.json, output ONLY the JSON wrapped in a m
 							</div>
 						</div>
 					{/each}
-					{#if isStreaming}
+					{#if isStreaming || terminalRunning}
 						{@const lastMsg = messages[messages.length - 1]}
 						{@const hasContent = lastMsg && (lastMsg.content || (lastMsg.toolCalls && lastMsg.toolCalls.length > 0))}
 						<div class="streaming-indicator">
 							<Loader2 class="h-3.5 w-3.5 spinning" />
-							<span>{hasContent ? 'Claude is working...' : 'Claude is thinking...'}</span>
+							{#if terminalRunning}
+								<span>Running in Terminal{hasContent ? ' — streaming output...' : '...'}</span>
+							{:else}
+								<span>{hasContent ? 'Claude is working...' : 'Claude is thinking...'}</span>
+							{/if}
 						</div>
 					{/if}
 				{/if}
@@ -649,17 +876,22 @@ IMPORTANT: When generating a component.json, output ONLY the JSON wrapped in a m
 			<div class="chat-input-area">
 				<textarea
 					class="chat-input"
-					placeholder="Describe the component you want to create..."
+					placeholder={useTerminal ? "Type your prompt — will open in Terminal.app..." : "Describe the component you want to create..."}
 					bind:value={inputValue}
 					onkeydown={handleKeydown}
 					rows="2"
-					disabled={isStreaming}
+					disabled={isStreaming || terminalRunning}
 				></textarea>
 				<div class="chat-input-actions">
 					{#if isStreaming}
 						<Button variant="destructive" size="sm" onclick={stopStreaming}>
 							<Square class="h-3.5 w-3.5 mr-1" />
 							Stop
+						</Button>
+					{:else if terminalRunning}
+						<Button variant="outline" size="sm" onclick={() => onDone?.()}>
+							<RefreshCw class="h-3.5 w-3.5 mr-1" />
+							Refresh Tree
 						</Button>
 					{:else}
 						<Button
@@ -668,8 +900,13 @@ IMPORTANT: When generating a component.json, output ONLY the JSON wrapped in a m
 							onclick={sendMessage}
 							disabled={!inputValue.trim()}
 						>
-							<Send class="h-3.5 w-3.5 mr-1" />
-							Send
+							{#if useTerminal}
+								<Terminal class="h-3.5 w-3.5 mr-1" />
+								Send to Terminal
+							{:else}
+								<Send class="h-3.5 w-3.5 mr-1" />
+								Send
+							{/if}
 						</Button>
 					{/if}
 				</div>
@@ -693,21 +930,66 @@ IMPORTANT: When generating a component.json, output ONLY the JSON wrapped in a m
 		max-height: none;
 	}
 
+	.chat-header-row {
+		display: flex;
+		align-items: center;
+		background: var(--color-muted);
+		border-bottom: 1px solid var(--color-border);
+	}
+
 	.chat-header {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
 		padding: 10px 16px;
-		background: var(--color-muted);
 		border: none;
-		border-bottom: 1px solid var(--color-border);
+		background: transparent;
 		cursor: pointer;
-		width: 100%;
+		flex: 1;
 		text-align: left;
 	}
 
 	.chat-header:hover {
 		background: var(--color-accent);
+	}
+
+	.mode-toggle {
+		display: flex;
+		align-items: center;
+		gap: 2px;
+		padding: 0 10px;
+		border-left: 1px solid var(--color-border);
+	}
+
+	.mode-btn {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 28px;
+		height: 28px;
+		border: none;
+		background: transparent;
+		cursor: pointer;
+		border-radius: var(--radius-sm);
+		color: var(--color-muted-foreground);
+		transition: all 0.15s ease;
+	}
+
+	.mode-btn:hover {
+		background: var(--color-accent);
+		color: var(--color-foreground);
+	}
+
+	.mode-btn.active {
+		background: var(--color-primary);
+		color: var(--color-primary-foreground);
+	}
+
+	:global(.terminal-badge) {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		font-size: 10px;
 	}
 
 	.chat-header-left {
