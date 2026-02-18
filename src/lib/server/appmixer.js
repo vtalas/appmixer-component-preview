@@ -72,7 +72,7 @@ export async function fetchE2EFlows() {
     const config = getAppmixerConfig();
     const token = await getAccessToken();
     const response = await fetch(
-        `${config.baseUrl}/flows?filter=customFields.category:E2E_test_flow&projection=name,flowId&limit=1000`,
+        `${config.baseUrl}/flows?filter=customFields.category:E2E_test_flow&projection=name,flowId,stage&limit=1000`,
         { headers: { 'Authorization': `Bearer ${token}` } }
     );
     if (!response.ok) throw new Error(`Failed to fetch E2E flows: ${response.status}`);
@@ -109,7 +109,11 @@ export async function stopFlow(flowId) {
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ command: 'stop' })
     });
-    if (!response.ok) throw new Error(`Failed to stop flow ${flowId}: ${response.status}`);
+    if (!response.ok) {
+        const body = await response.text().catch(() => '');
+        console.error(`Stop flow ${flowId} failed: ${response.status} ${body}`);
+        throw new Error(`Failed to stop flow ${flowId}: ${response.status} ${body}`);
+    }
 }
 
 export async function updateFlow(flowId, flowData) {

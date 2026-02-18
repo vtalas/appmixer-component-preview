@@ -24,12 +24,21 @@
 		planningError = null,
 		onClearPlanning,
 		onRefreshTree,
-		onOpenSettings
+		onOpenSettings,
+		initialE2ETab = null,
+		onE2ETabChange
 	} = $props();
 
 	let showTestPlan = $state(false);
 	let showE2EFlows = $state(false);
 	let showClaudeChat = $state(false);
+
+	// Open E2E panel if initialE2ETab is set
+	$effect(() => {
+		if (initialE2ETab) {
+			showE2EFlows = true;
+		}
+	});
 
 	// Resizable chat panel
 	const PANEL_STORAGE_KEY = 'appmixer-claude-panel-width';
@@ -236,7 +245,13 @@ When creating PRs or issues, relate them to the ${connector.name} connector work
 
 	<div class="dashboard-content-wrapper">
 		{#if showE2EFlows}
-			<E2EFlowsPanel connectorName={connector.name} onBack={() => showE2EFlows = false} {onOpenSettings} />
+			<E2EFlowsPanel
+				connectorName={connector.name}
+				initialTab={initialE2ETab}
+				onBack={() => { showE2EFlows = false; onE2ETabChange?.(null); }}
+				onTabChange={(tab) => onE2ETabChange?.(tab)}
+				{onOpenSettings}
+			/>
 		{:else if showTestPlan && testPlanData && testPlanConnector}
 			<!-- Test Plan View -->
 			<div class="test-plan-view">
@@ -295,7 +310,7 @@ When creating PRs or issues, relate them to the ${connector.name} connector work
 								E2E Flows
 							</span>
 							<span class="test-plan-empty">View E2E test flows for this connector</span>
-							<Button variant="outline" size="sm" onclick={() => showE2EFlows = true} class="test-plan-btn">
+							<Button variant="outline" size="sm" onclick={() => { showE2EFlows = true; onE2ETabChange?.('appmixer'); }} class="test-plan-btn">
 								View E2E Flows
 							</Button>
 						</Card.Content>

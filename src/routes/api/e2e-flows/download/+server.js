@@ -20,14 +20,15 @@ export async function POST({ request }) {
 
         const safeName = flowName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
         const fileName = `test-flow-${safeName}.json`;
-        const e2eDir = path.join(connectorsDir, connector, 'artifacts', 'e2e-flows');
+        const e2eDir = path.join(connectorsDir, connector, 'artifacts', 'ai-artifacts', 'test-flows');
 
         fs.mkdirSync(e2eDir, { recursive: true });
-        fs.writeFileSync(path.join(e2eDir, fileName), content, 'utf-8');
+        const filePath = path.join(e2eDir, fileName);
+        fs.writeFileSync(filePath, content, 'utf-8');
 
         return json({
             success: true,
-            localPath: path.join(connector, 'artifacts', 'e2e-flows', fileName),
+            localPath: path.relative(connectorsDir, filePath),
             fileName
         });
     } catch (e) {

@@ -17,6 +17,7 @@
 	let searchQuery = $state('');
 	let selectedComponent = $state(null);
 	let selectedDashboardConnector = $state(null);
+	let initialE2ETab = $state(null);
 	let showSettings = $state(false);
 	let expandedConnectors = $state(new Set());
 	let expandedModules = $state(new Set());
@@ -85,8 +86,12 @@
 		expandedModules = new Set([...expandedModules, `${connectorName}/${moduleName}`]);
 	}
 
-	// Parse /connector/<connectorName>[/<componentName>] from pathname
+	// Parse /connector/<connectorName>[/e2e/local|remote][/<componentName>] from pathname
 	function parseRoute(pathname) {
+		const e2eMatch = pathname.match(/^\/connector\/([^/]+)\/e2e\/(local|remote)\/?$/);
+		if (e2eMatch) {
+			return { connector: decodeURIComponent(e2eMatch[1]), dashboard: true, e2eTab: e2eMatch[2] === 'remote' ? 'appmixer' : 'local' };
+		}
 		const componentMatch = pathname.match(/^\/connector\/([^/]+)\/([^/]+)\/?$/);
 		if (componentMatch) {
 			return { connector: decodeURIComponent(componentMatch[1]), component: decodeURIComponent(componentMatch[2]) };
@@ -108,6 +113,7 @@
 				if (connector) {
 					selectedDashboardConnector = connector;
 					selectedComponent = null;
+					initialE2ETab = route.e2eTab || null;
 					expandedConnectors = new Set([...expandedConnectors, connector.name]);
 				}
 			} else {
@@ -115,6 +121,7 @@
 				if (component) {
 					selectedComponent = component;
 					selectedDashboardConnector = null;
+					initialE2ETab = null;
 					expandTreeForComponent(component);
 				}
 			}
@@ -155,6 +162,7 @@
 					if (connector) {
 						selectedDashboardConnector = connector;
 						selectedComponent = null;
+						initialE2ETab = route.e2eTab || null;
 						expandedConnectors = new Set([...expandedConnectors, connector.name]);
 						return;
 					}
@@ -163,6 +171,7 @@
 					if (component) {
 						selectedComponent = component;
 						selectedDashboardConnector = null;
+						initialE2ETab = null;
 						expandTreeForComponent(component);
 						return;
 					}
@@ -170,6 +179,7 @@
 			}
 			selectedComponent = null;
 			selectedDashboardConnector = null;
+			initialE2ETab = null;
 		};
 
 		window.addEventListener('popstate', handlePopState);
@@ -1097,6 +1107,17 @@
 				onClearPlanning={() => { planningOutput = ''; planningError = null; }}
 				onRefreshTree={() => fileSync.scanConnectorsDirectory()}
 				onOpenSettings={() => { showSettings = true; selectedComponent = null; selectedDashboardConnector = null; updateUrl(null); }}
+				{initialE2ETab}
+				onE2ETabChange={(tab) => {
+					initialE2ETab = tab;
+					if (tab && selectedDashboardConnector) {
+						const tabPath = tab === 'appmixer' ? 'remote' : 'local';
+						const newPath = `/connector/${encodeURIComponent(selectedDashboardConnector.name)}/e2e/${tabPath}`;
+						if (window.location.pathname !== newPath) window.history.pushState(null, '', newPath);
+					} else if (!tab && selectedDashboardConnector) {
+						updateUrl(null, selectedDashboardConnector);
+					}
+				}}
 			/>
 		{:else if selectedComponent}
 			{@const comp = selectedComponent.componentJson}

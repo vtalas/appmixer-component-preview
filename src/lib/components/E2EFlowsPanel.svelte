@@ -4,7 +4,10 @@
 	import { X, ExternalLink, Github, Trash2, FileDiff, FileText, Play, Square, Settings, Loader2, Download, Upload, HardDrive } from 'lucide-svelte';
 	import { onMount } from 'svelte';
 
-	let { connectorName = '', onBack, onOpenSettings } = $props();
+	let { connectorName = '', initialTab = null, onBack, onTabChange, onOpenSettings } = $props();
+
+	// --- Tab state ---
+	let activeTab = $state(initialTab || 'appmixer');
 
 	// --- Data state ---
 	let flows = $state([]);
@@ -18,157 +21,194 @@
 	let appmixerInfo = $state(null);
 	let githubInfo = $state(null);
 
-	// Sync statuses
+	// Sync statuses (Appmixer tab — keyed by flowId)
 	let syncStatuses = $state({});
 	let syncStatusLoading = $state(false);
+
+	// Local sync statuses (Local tab — keyed by flow name)
+	let localSyncStatuses = $state({});
+	let localSyncStatusLoading = $state(false);
 
 	// Download / Upload tracking
 	let isDownloading = $state(new Set());
 	let isUploading = $state(new Set());
 
-	// Merged flows: three-way merge by flow name
-	let mergedFlows = $derived(() => {
-		const byName = new Map();
-
-		// 1. Add all instance flows
-		for (const f of flows) {
-			byName.set(f.name, {
-				...f,
-				onInstance: true,
-				onLocal: false,
-				localPath: null,
-				localHash: null,
-				localFileName: null,
-				...(syncStatuses[f.flowId] || {})
-			});
-		}
-
-		// 2. Merge local flows
-		for (const lf of localFlows) {
-			const existing = byName.get(lf.name);
-			if (existing) {
-				existing.onLocal = true;
-				existing.localPath = lf.localPath;
-				existing.localHash = lf.localHash;
-				existing.localFileName = lf.fileName;
-			} else {
-				byName.set(lf.name, {
-					name: lf.name,
-					flowId: null,
-					connector: lf.connector,
-					running: false,
-					url: null,
-					onInstance: false,
-					onLocal: true,
-					localPath: lf.localPath,
-					localHash: lf.localHash,
-					localFileName: lf.fileName,
-					syncStatus: null,
-					githubUrl: null,
-					githubPath: null,
-					localSyncStatus: null
-				});
-			}
-		}
-
-		return [...byName.values()];
+	// ===== Appmixer tab merged flows =====
+	let appmixerMergedFlows = $derived(() => {
+		return flows.map(f => ({
+			...f,
+			...(syncStatuses[f.flowId] || {})
+		}));
 	});
 
-	// Stats
-	let stats = $derived({
-		total: mergedFlows().length,
-		running: mergedFlows().filter(f => f.running).length,
-		stopped: mergedFlows().filter(f => f.onInstance && !f.running).length,
-		match: mergedFlows().filter(f => f.syncStatus === 'match').length,
-		modified: mergedFlows().filter(f => f.syncStatus === 'modified').length,
-		serverOnly: mergedFlows().filter(f => f.syncStatus === 'server_only').length,
-		error: mergedFlows().filter(f => f.syncStatus === 'error').length,
-		localOnly: mergedFlows().filter(f => f.onLocal && !f.onInstance).length
+	// ===== Local tab merged flows =====
+	let localMergedFlows = $derived(() => {
+		return localFlows.map(lf => ({
+			...lf,
+			...(localSyncStatuses[lf.name] || {})
+		}));
 	});
 
-	// Filters
-	let searchQuery = $state('');
-	let runningFilter = $state('');
-	let syncFilter = $state('');
-	let localSyncFilter = $state('');
+	// ===== Appmixer tab stats =====
+	let appmixerStats = $derived({
+		total: appmixerMergedFlows().length,
+		running: appmixerMergedFlows().filter(f => f.running).length,
+		stopped: appmixerMergedFlows().filter(f => !f.running).length,
+		match: appmixerMergedFlows().filter(f => f.syncStatus === 'match').length,
+		modified: appmixerMergedFlows().filter(f => f.syncStatus === 'modified').length,
+		serverOnly: appmixerMergedFlows().filter(f => f.syncStatus === 'server_only').length
+	});
 
-	let filteredFlows = $derived(
-		mergedFlows().filter(flow => {
-			const matchSearch = !searchQuery || flow.name?.toLowerCase().includes(searchQuery.toLowerCase());
-			const matchRunning = !runningFilter ||
-				(runningFilter === 'running' && flow.running) ||
-				(runningFilter === 'stopped' && flow.onInstance && !flow.running) ||
-				(runningFilter === 'local_only' && !flow.onInstance);
-			const matchSync = !syncFilter || flow.syncStatus === syncFilter;
-			const matchLocalSync = !localSyncFilter ||
-				(localSyncFilter === 'local_only' && flow.onLocal && !flow.onInstance) ||
-				(localSyncFilter !== 'local_only' && flow.localSyncStatus === localSyncFilter);
+	// ===== Local tab stats =====
+	let localStats = $derived({
+		total: localMergedFlows().length,
+		githubMatch: localMergedFlows().filter(f => f.githubSyncStatus === 'match').length,
+		githubModified: localMergedFlows().filter(f => f.githubSyncStatus === 'modified').length,
+		localOnly: localMergedFlows().filter(f => f.githubSyncStatus === 'local_only').length,
+		onAppmixer: localMergedFlows().filter(f => f.appmixerSyncStatus && f.appmixerSyncStatus !== 'local_only').length,
+		notOnAppmixer: localMergedFlows().filter(f => !f.appmixerSyncStatus || f.appmixerSyncStatus === 'local_only').length
+	});
+
+	// ===== Appmixer tab filters =====
+	let appmixerSearch = $state('');
+	let appmixerRunningFilter = $state('');
+	let appmixerSyncFilter = $state('');
+	let appmixerLocalSyncFilter = $state('');
+
+	let appmixerFilteredFlows = $derived(
+		appmixerMergedFlows().filter(flow => {
+			const matchSearch = !appmixerSearch || flow.name?.toLowerCase().includes(appmixerSearch.toLowerCase());
+			const matchRunning = !appmixerRunningFilter ||
+				(appmixerRunningFilter === 'running' && flow.running) ||
+				(appmixerRunningFilter === 'stopped' && !flow.running);
+			const matchSync = !appmixerSyncFilter || flow.syncStatus === appmixerSyncFilter;
+			const matchLocalSync = !appmixerLocalSyncFilter || flow.localSyncStatus === appmixerLocalSyncFilter;
 			return matchSearch && matchRunning && matchSync && matchLocalSync;
 		})
 	);
 
-	// Selection
-	let selectedFlowIds = $state(new Set());
-	function isSelectable(flow) {
-		return flow.onInstance && (flow.syncStatus === 'modified' || flow.syncStatus === 'server_only');
-	}
-	let selectableFlows = $derived(filteredFlows.filter(isSelectable));
-	let allSelectableSelected = $derived(
-		selectableFlows.length > 0 && selectableFlows.every(f => selectedFlowIds.has(f.flowId))
-	);
-	let selectedFlows = $derived(mergedFlows().filter(f => f.flowId && selectedFlowIds.has(f.flowId)));
+	// ===== Local tab filters =====
+	let localSearch = $state('');
+	let localGithubSyncFilter = $state('');
+	let localAppmixerSyncFilter = $state('');
 
-	function toggleFlowSelection(flowId) {
-		const s = new Set(selectedFlowIds);
+	let localFilteredFlows = $derived(
+		localMergedFlows().filter(flow => {
+			const matchSearch = !localSearch || flow.name?.toLowerCase().includes(localSearch.toLowerCase());
+			const matchGithub = !localGithubSyncFilter || flow.githubSyncStatus === localGithubSyncFilter;
+			const matchAppmixer = !localAppmixerSyncFilter || flow.appmixerSyncStatus === localAppmixerSyncFilter;
+			return matchSearch && matchGithub && matchAppmixer;
+		})
+	);
+
+	// ===== Appmixer tab selection =====
+	let appmixerSelectedIds = $state(new Set());
+	function isAppmixerSelectable(flow) {
+		return flow.syncStatus === 'modified' || flow.syncStatus === 'server_only';
+	}
+	let appmixerSelectableFlows = $derived(appmixerFilteredFlows.filter(isAppmixerSelectable));
+	let appmixerAllSelected = $derived(
+		appmixerSelectableFlows.length > 0 && appmixerSelectableFlows.every(f => appmixerSelectedIds.has(f.flowId))
+	);
+	let appmixerSelectedFlows = $derived(appmixerMergedFlows().filter(f => f.flowId && appmixerSelectedIds.has(f.flowId)));
+
+	function toggleAppmixerSelection(flowId) {
+		const s = new Set(appmixerSelectedIds);
 		s.has(flowId) ? s.delete(flowId) : s.add(flowId);
-		selectedFlowIds = s;
+		appmixerSelectedIds = s;
 	}
-	function toggleSelectAll() {
-		const s = new Set(selectedFlowIds);
-		if (allSelectableSelected) {
-			selectableFlows.forEach(f => s.delete(f.flowId));
+	function toggleAppmixerSelectAll() {
+		const s = new Set(appmixerSelectedIds);
+		if (appmixerAllSelected) {
+			appmixerSelectableFlows.forEach(f => s.delete(f.flowId));
 		} else {
-			selectableFlows.forEach(f => s.add(f.flowId));
+			appmixerSelectableFlows.forEach(f => s.add(f.flowId));
 		}
-		selectedFlowIds = s;
+		appmixerSelectedIds = s;
 	}
-	function clearSelection() { selectedFlowIds = new Set(); }
+
+	// ===== Local tab selection =====
+	let localSelectedNames = $state(new Set());
+	function isLocalSelectable(flow) {
+		return flow.githubSyncStatus === 'modified' || flow.githubSyncStatus === 'local_only';
+	}
+	let localSelectableFlows = $derived(localFilteredFlows.filter(isLocalSelectable));
+	let localAllSelected = $derived(
+		localSelectableFlows.length > 0 && localSelectableFlows.every(f => localSelectedNames.has(f.name))
+	);
+	let localSelectedFlows = $derived(localMergedFlows().filter(f => localSelectedNames.has(f.name)));
+
+	function toggleLocalSelection(name) {
+		const s = new Set(localSelectedNames);
+		s.has(name) ? s.delete(name) : s.add(name);
+		localSelectedNames = s;
+	}
+	function toggleLocalSelectAll() {
+		const s = new Set(localSelectedNames);
+		if (localAllSelected) {
+			localSelectableFlows.forEach(f => s.delete(f.name));
+		} else {
+			localSelectableFlows.forEach(f => s.add(f.name));
+		}
+		localSelectedNames = s;
+	}
+
+	function clearSelection() {
+		appmixerSelectedIds = new Set();
+		localSelectedNames = new Set();
+	}
 
 	// Toggle (start/stop)
 	let togglingFlowIds = $state(new Set());
 
 	async function toggleFlow(flow) {
-		const action = flow.running ? 'stop' : 'start';
-		togglingFlowIds = new Set([...togglingFlowIds, flow.flowId]);
+		const flowId = flow.flowId || flow.appmixerFlowId;
+		if (!flowId) return;
+		const isRunning = flow.running || flow.appmixerStage === 'running';
+		const action = isRunning ? 'stop' : 'start';
+		togglingFlowIds = new Set([...togglingFlowIds, flowId]);
 		try {
 			const res = await fetch('/api/e2e-flows/toggle', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ flowId: flow.flowId, action })
+				body: JSON.stringify({ flowId, action })
 			});
-			if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || `Failed to ${action}`);
-			await loadFlows();
+			const data = await res.json();
+			if (!res.ok) throw new Error(data.message || 'Failed to toggle');
+			const newStage = data.newStage || 'stopped';
+			const isRunning = newStage === 'running';
+			// Update Appmixer tab flows
+			flows = flows.map(f => f.flowId === flowId ? { ...f, running: isRunning, stage: newStage } : f);
+			// Update Local tab sync statuses (appmixerStage)
+			const updated = { ...localSyncStatuses };
+			for (const [name, status] of Object.entries(updated)) {
+				if (status.appmixerFlowId === flowId) {
+					updated[name] = { ...status, appmixerStage: newStage };
+				}
+			}
+			localSyncStatuses = updated;
 		} catch (e) {
-			alert(`Failed to ${action} flow: ${e.message}`);
+			alert(`Failed to toggle flow: ${e.message}`);
 		} finally {
 			const s = new Set(togglingFlowIds);
-			s.delete(flow.flowId);
+			s.delete(flowId);
 			togglingFlowIds = s;
 		}
 	}
 
 	// Download: Instance → Local
 	async function downloadFlow(flow) {
-		if (!flow.flowId) return;
+		const flowId = flow.flowId || flow.appmixerFlowId;
+		if (!flowId) return;
 		isDownloading = new Set([...isDownloading, flow.name]);
 		try {
 			const res = await fetch('/api/e2e-flows/download', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ flowId: flow.flowId, flowName: flow.name, connector: flow.connector || connectorName })
+				body: JSON.stringify({ flowId, flowName: flow.name, connector: flow.connector || connectorName })
 			});
 			if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || 'Failed to download');
-			await Promise.all([loadLocalFlows(), loadSyncStatuses()]);
+			await Promise.all([loadLocalFlows(), loadSyncStatuses(), loadLocalSyncStatuses()]);
 		} catch (e) {
 			alert(`Failed to download flow: ${e.message}`);
 		} finally {
@@ -181,15 +221,16 @@
 	// Upload: Local → Instance
 	async function uploadFlow(flow) {
 		if (!flow.localPath) return;
+		const flowId = flow.flowId || flow.appmixerFlowId || undefined;
 		isUploading = new Set([...isUploading, flow.name]);
 		try {
 			const res = await fetch('/api/e2e-flows/upload', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ localPath: flow.localPath, flowId: flow.flowId || undefined })
+				body: JSON.stringify({ localPath: flow.localPath, flowId })
 			});
 			if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || 'Failed to upload');
-			await Promise.all([loadFlows(), loadSyncStatuses()]);
+			await Promise.all([loadFlows(), loadSyncStatuses(), loadLocalSyncStatuses()]);
 		} catch (e) {
 			alert(`Failed to upload flow: ${e.message}`);
 		} finally {
@@ -224,9 +265,9 @@
 			if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || 'Failed to delete');
 			const result = await res.json();
 			if (result.errors?.length > 0) throw new Error(result.errors[0].error);
-			const s = new Set(selectedFlowIds);
+			const s = new Set(appmixerSelectedIds);
 			s.delete(flowToDelete.flowId);
-			selectedFlowIds = s;
+			appmixerSelectedIds = s;
 			showDeleteDialog = false;
 			flowToDelete = null;
 			await loadFlows();
@@ -256,10 +297,11 @@
 		showDiffDialog = true;
 		isDiffLoading = true;
 		try {
+			const flowId = flow.flowId || flow.appmixerFlowId;
 			const res = await fetch('/api/e2e-flows/diff', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ flowId: flow.flowId, flowName: flow.name })
+				body: JSON.stringify({ flowId, flowName: flow.name })
 			});
 			if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || 'Failed to load diff');
 			diffData = await res.json();
@@ -275,10 +317,11 @@
 		isReverting = true;
 		revertError = '';
 		try {
+			const flowId = diffFlow.flowId || diffFlow.appmixerFlowId;
 			const res = await fetch('/api/e2e-flows/revert', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ flowId: diffFlow.flowId, flowName: diffFlow.name })
+				body: JSON.stringify({ flowId, flowName: diffFlow.name })
 			});
 			if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || 'Failed to revert');
 			revertSuccess = true;
@@ -295,8 +338,7 @@
 		revertSuccess = false;
 		revertError = '';
 		if (hadRevert) {
-			await loadFlows();
-			await loadSyncStatuses();
+			await Promise.all([loadFlows(), loadSyncStatuses(), loadLocalSyncStatuses()]);
 		}
 	}
 
@@ -343,8 +385,17 @@
 	let syncResult = $state(null);
 
 	function openSyncDialog() {
-		const count = selectedFlowIds.size;
-		syncPrTitle = `Sync ${count} E2E flow${count > 1 ? 's' : ''} from Appmixer`;
+		let flowsForSync;
+		let source;
+		if (activeTab === 'appmixer') {
+			flowsForSync = appmixerSelectedFlows;
+			source = 'Appmixer';
+		} else {
+			flowsForSync = localSelectedFlows;
+			source = 'Local';
+		}
+		const count = flowsForSync.length;
+		syncPrTitle = `Sync ${count} E2E flow${count > 1 ? 's' : ''} from ${source}`;
 		syncPrDescription = '';
 		syncTargetBranch = githubInfo?.branch || 'dev';
 		syncError = '';
@@ -352,14 +403,24 @@
 		showSyncDialog = true;
 	}
 
+	function getSyncFlowsToSync() {
+		if (activeTab === 'appmixer') {
+			return appmixerSelectedFlows.map(f => ({
+				flowId: f.flowId, name: f.name, connector: f.connector, githubPath: f.githubPath || null
+			}));
+		} else {
+			return localSelectedFlows.map(f => ({
+				localPath: f.localPath, name: f.name, connector: f.connector || connectorName, githubPath: f.githubPath || null
+			}));
+		}
+	}
+
 	async function performSync() {
 		if (!syncPrTitle.trim()) { syncError = 'PR title is required'; return; }
 		isSyncing = true;
 		syncError = '';
 		try {
-			const flowsToSync = selectedFlows.map(f => ({
-				flowId: f.flowId, name: f.name, connector: f.connector, githubPath: f.githubPath || null
-			}));
+			const flowsToSync = getSyncFlowsToSync();
 			const res = await fetch('/api/e2e-flows/sync', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
@@ -380,11 +441,9 @@
 		showSyncDialog = false;
 		syncResult = null;
 		if (hadSuccess) {
-			await loadFlows();
-			await loadSyncStatuses();
+			await Promise.all([loadFlows(), loadSyncStatuses(), loadLocalSyncStatuses()]);
 		}
 	}
-
 
 	// --- Diff computation ---
 	function computeDiff(oldText, newText) {
@@ -434,12 +493,14 @@
 		match: { label: 'In Sync', cls: 'sync-badge-match' },
 		modified: { label: 'Modified', cls: 'sync-badge-modified' },
 		server_only: { label: 'Server Only', cls: 'sync-badge-server-only' },
+		local_only: { label: 'Local Only', cls: 'sync-badge-local-only' },
 		error: { label: 'Error', cls: 'sync-badge-error' }
 	};
 
 	const localSyncStatusConfig = {
 		match: { label: 'Match', cls: 'sync-badge-match' },
 		modified: { label: 'Modified', cls: 'sync-badge-modified' },
+		local_only: { label: 'Not on Instance', cls: 'sync-badge-local-only' },
 		error: { label: 'Error', cls: 'sync-badge-error' }
 	};
 
@@ -507,10 +568,31 @@
 		}
 	}
 
+	async function loadLocalSyncStatuses() {
+		if (!localFlows.length) return;
+		localSyncStatusLoading = true;
+		try {
+			const res = await fetch('/api/e2e-flows/local-sync-status', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ localFlows: localFlows.map(f => ({ name: f.name, localHash: f.localHash })) })
+			});
+			if (res.ok) {
+				const data = await res.json();
+				localSyncStatuses = data.statuses;
+			}
+		} catch (e) {
+			console.error('Failed to load local sync statuses:', e);
+		} finally {
+			localSyncStatusLoading = false;
+		}
+	}
+
 	onMount(async () => {
 		await loadSettings();
 		await Promise.all([loadFlows(), loadLocalFlows()]);
 		loadSyncStatuses();
+		loadLocalSyncStatuses();
 	});
 
 	// Escape key handler
@@ -559,6 +641,24 @@
 		</div>
 	</div>
 
+	<!-- Tab bar -->
+	<div class="e2e-tab-bar">
+		<button class="e2e-tab" class:active={activeTab === 'local'} onclick={() => { activeTab = 'local'; onTabChange?.('local'); }}>
+			<HardDrive class="h-3.5 w-3.5" />
+			Local
+			{#if localFlows.length > 0}
+				<span class="e2e-tab-count">{localFlows.length}</span>
+			{/if}
+		</button>
+		<button class="e2e-tab" class:active={activeTab === 'appmixer'} onclick={() => { activeTab = 'appmixer'; onTabChange?.('appmixer'); }}>
+			<ExternalLink class="h-3.5 w-3.5" />
+			Appmixer
+			{#if flows.length > 0}
+				<span class="e2e-tab-count">{flows.length}</span>
+			{/if}
+		</button>
+	</div>
+
 	{#if loading}
 		<div class="e2e-loading">
 			<Loader2 class="h-5 w-5 spinning" />
@@ -566,84 +666,78 @@
 		</div>
 	{:else if error}
 		<div class="e2e-error">{error}</div>
-	{:else}
+	{:else if activeTab === 'appmixer'}
+		<!-- ==================== APPMIXER TAB ==================== -->
+
 		<!-- Stats bar -->
 		<div class="e2e-stats-bar">
-			<button class="e2e-stat" class:active={!syncFilter && !runningFilter && !localSyncFilter} onclick={() => { syncFilter = ''; runningFilter = ''; localSyncFilter = ''; }}>
-				<span class="e2e-stat-value">{stats.total}</span>
+			<button class="e2e-stat" class:active={!appmixerSyncFilter && !appmixerRunningFilter && !appmixerLocalSyncFilter} onclick={() => { appmixerSyncFilter = ''; appmixerRunningFilter = ''; appmixerLocalSyncFilter = ''; }}>
+				<span class="e2e-stat-value">{appmixerStats.total}</span>
 				<span class="e2e-stat-label">Total</span>
 			</button>
-			<button class="e2e-stat stat-running" class:active={runningFilter === 'running'} onclick={() => runningFilter = runningFilter === 'running' ? '' : 'running'}>
-				<span class="e2e-stat-value">{stats.running}</span>
+			<button class="e2e-stat stat-running" class:active={appmixerRunningFilter === 'running'} onclick={() => appmixerRunningFilter = appmixerRunningFilter === 'running' ? '' : 'running'}>
+				<span class="e2e-stat-value">{appmixerStats.running}</span>
 				<span class="e2e-stat-label">Running</span>
 			</button>
-			<button class="e2e-stat stat-stopped" class:active={runningFilter === 'stopped'} onclick={() => runningFilter = runningFilter === 'stopped' ? '' : 'stopped'}>
-				<span class="e2e-stat-value">{stats.stopped}</span>
+			<button class="e2e-stat stat-stopped" class:active={appmixerRunningFilter === 'stopped'} onclick={() => appmixerRunningFilter = appmixerRunningFilter === 'stopped' ? '' : 'stopped'}>
+				<span class="e2e-stat-value">{appmixerStats.stopped}</span>
 				<span class="e2e-stat-label">Stopped</span>
 			</button>
 			<span class="e2e-stat-divider"></span>
-			<button class="e2e-stat stat-match" class:active={syncFilter === 'match'} onclick={() => syncFilter = syncFilter === 'match' ? '' : 'match'}>
-				<span class="e2e-stat-value">{syncStatusLoading ? '...' : stats.match}</span>
+			<button class="e2e-stat stat-match" class:active={appmixerSyncFilter === 'match'} onclick={() => appmixerSyncFilter = appmixerSyncFilter === 'match' ? '' : 'match'}>
+				<span class="e2e-stat-value">{syncStatusLoading ? '...' : appmixerStats.match}</span>
 				<span class="e2e-stat-label">In Sync</span>
 			</button>
-			<button class="e2e-stat stat-modified" class:active={syncFilter === 'modified'} onclick={() => syncFilter = syncFilter === 'modified' ? '' : 'modified'}>
-				<span class="e2e-stat-value">{syncStatusLoading ? '...' : stats.modified}</span>
+			<button class="e2e-stat stat-modified" class:active={appmixerSyncFilter === 'modified'} onclick={() => appmixerSyncFilter = appmixerSyncFilter === 'modified' ? '' : 'modified'}>
+				<span class="e2e-stat-value">{syncStatusLoading ? '...' : appmixerStats.modified}</span>
 				<span class="e2e-stat-label">Modified</span>
 			</button>
-			<button class="e2e-stat stat-server-only" class:active={syncFilter === 'server_only'} onclick={() => syncFilter = syncFilter === 'server_only' ? '' : 'server_only'}>
-				<span class="e2e-stat-value">{syncStatusLoading ? '...' : stats.serverOnly}</span>
+			<button class="e2e-stat stat-server-only" class:active={appmixerSyncFilter === 'server_only'} onclick={() => appmixerSyncFilter = appmixerSyncFilter === 'server_only' ? '' : 'server_only'}>
+				<span class="e2e-stat-value">{syncStatusLoading ? '...' : appmixerStats.serverOnly}</span>
 				<span class="e2e-stat-label">Server Only</span>
-			</button>
-			<span class="e2e-stat-divider"></span>
-			<button class="e2e-stat stat-local-only" class:active={localSyncFilter === 'local_only'} onclick={() => localSyncFilter = localSyncFilter === 'local_only' ? '' : 'local_only'}>
-				<span class="e2e-stat-value">{stats.localOnly}</span>
-				<span class="e2e-stat-label">Local Only</span>
 			</button>
 		</div>
 
 		<!-- Filter bar -->
 		<div class="e2e-filter-bar">
-			<input type="text" placeholder="Search flows..." bind:value={searchQuery} class="e2e-search" />
-			<select bind:value={runningFilter} class="e2e-select">
+			<input type="text" placeholder="Search flows..." bind:value={appmixerSearch} class="e2e-search" />
+			<select bind:value={appmixerRunningFilter} class="e2e-select">
 				<option value="">All Statuses</option>
 				<option value="running">Running</option>
 				<option value="stopped">Stopped</option>
-				<option value="local_only">Local Only</option>
 			</select>
-			<select bind:value={syncFilter} class="e2e-select">
+			<select bind:value={appmixerSyncFilter} class="e2e-select">
 				<option value="">All GitHub Sync</option>
 				<option value="match">In Sync</option>
 				<option value="modified">Modified</option>
 				<option value="server_only">Server Only</option>
 				<option value="error">Error</option>
 			</select>
-			<select bind:value={localSyncFilter} class="e2e-select">
+			<select bind:value={appmixerLocalSyncFilter} class="e2e-select">
 				<option value="">All Local Sync</option>
 				<option value="match">Match</option>
 				<option value="modified">Modified</option>
-				<option value="local_only">Local Only</option>
 			</select>
-			{#if searchQuery || runningFilter || syncFilter || localSyncFilter}
-				<button class="e2e-clear-btn" onclick={() => { searchQuery = ''; runningFilter = ''; syncFilter = ''; localSyncFilter = ''; }}>Clear</button>
+			{#if appmixerSearch || appmixerRunningFilter || appmixerSyncFilter || appmixerLocalSyncFilter}
+				<button class="e2e-clear-btn" onclick={() => { appmixerSearch = ''; appmixerRunningFilter = ''; appmixerSyncFilter = ''; appmixerLocalSyncFilter = ''; }}>Clear</button>
 			{/if}
-			<span class="e2e-count">{filteredFlows.length} of {mergedFlows().length} flows</span>
+			<span class="e2e-count">{appmixerFilteredFlows.length} of {appmixerMergedFlows().length} flows</span>
 		</div>
 
-		<!-- Flow table -->
+		<!-- Appmixer flow table -->
 		<div class="e2e-table-wrap">
-			{#if filteredFlows.length === 0}
+			{#if appmixerFilteredFlows.length === 0}
 				<div class="e2e-empty">No E2E flows found</div>
 			{:else}
 				<table class="e2e-table">
 					<thead>
 						<tr>
 							<th class="col-check">
-								{#if selectableFlows.length > 0}
-									<input type="checkbox" checked={allSelectableSelected} onchange={toggleSelectAll} />
+								{#if appmixerSelectableFlows.length > 0}
+									<input type="checkbox" checked={appmixerAllSelected} onchange={toggleAppmixerSelectAll} />
 								{/if}
 							</th>
 							<th class="col-name">Flow Name</th>
-							<th class="col-sources">Sources</th>
 							<th class="col-status">Status</th>
 							<th class="col-sync">GitHub Sync</th>
 							<th class="col-local-sync">Local Sync</th>
@@ -651,51 +745,45 @@
 						</tr>
 					</thead>
 					<tbody>
-						{#each filteredFlows as flow (flow.name)}
-							{@const selectable = isSelectable(flow)}
-							<tr class:selected={flow.flowId && selectedFlowIds.has(flow.flowId)}>
+						{#each appmixerFilteredFlows as flow (flow.flowId)}
+							{@const selectable = isAppmixerSelectable(flow)}
+							<tr class:selected={appmixerSelectedIds.has(flow.flowId)}>
 								<td class="col-check">
 									{#if selectable}
-										<input type="checkbox" checked={selectedFlowIds.has(flow.flowId)} onchange={() => toggleFlowSelection(flow.flowId)} />
+										<input type="checkbox" checked={appmixerSelectedIds.has(flow.flowId)} onchange={() => toggleAppmixerSelection(flow.flowId)} />
 									{/if}
 								</td>
 								<td class="col-name">
 									<span class="flow-name">{flow.name}</span>
-								</td>
-								<td class="col-sources">
-									<div class="source-icons">
-										{#if flow.onInstance}
-											<span class="source-icon source-instance" title="On Instance">
-												<ExternalLink size={12} />
-											</span>
-										{/if}
-										{#if flow.onLocal}
-											<span class="source-icon source-local" title="Local file">
-												<HardDrive size={12} />
-											</span>
-										{/if}
-										{#if flow.githubUrl}
-											<span class="source-icon source-github" title="On GitHub">
-												<Github size={12} />
-											</span>
-										{/if}
-									</div>
+									<a href={flow.url} target="_blank" rel="noopener noreferrer" class="flow-id-link" title="Open in Designer: {flow.flowId}">
+										{flow.flowId.slice(0, 8)}...
+									</a>
 								</td>
 								<td class="col-status">
-									{#if flow.onInstance}
+									<div class="status-with-toggle">
 										{#if flow.running}
 											<span class="status-badge status-running">Running</span>
 										{:else}
 											<span class="status-badge status-stopped">Stopped</span>
 										{/if}
-									{:else}
-										<span class="text-muted">---</span>
-									{/if}
+										<button
+											class="action-btn {flow.running ? 'action-stop' : 'action-start'}"
+											onclick={() => toggleFlow(flow)}
+											disabled={togglingFlowIds.has(flow.flowId)}
+											title={flow.running ? 'Stop' : 'Start'}
+										>
+											{#if togglingFlowIds.has(flow.flowId)}
+												<Loader2 size={14} class="spinning" />
+											{:else if flow.running}
+												<Square size={14} />
+											{:else}
+												<Play size={14} />
+											{/if}
+										</button>
+									</div>
 								</td>
 								<td class="col-sync">
-									{#if !flow.onInstance}
-										<span class="text-muted">---</span>
-									{:else if flow.syncStatus === null}
+									{#if flow.syncStatus == null}
 										<span class="sync-badge-loading"></span>
 									{:else}
 										{@const sc = syncStatusConfig[flow.syncStatus] || syncStatusConfig.error}
@@ -703,14 +791,8 @@
 									{/if}
 								</td>
 								<td class="col-local-sync">
-									{#if !flow.onLocal && !flow.onInstance}
+									{#if flow.localSyncStatus == null}
 										<span class="text-muted">---</span>
-									{:else if flow.onLocal && !flow.onInstance}
-										<span class="sync-badge sync-badge-local-only">Local Only</span>
-									{:else if !flow.onLocal}
-										<span class="text-muted">---</span>
-									{:else if flow.localSyncStatus === null}
-										<span class="sync-badge-loading"></span>
 									{:else}
 										{@const lsc = localSyncStatusConfig[flow.localSyncStatus] || localSyncStatusConfig.error}
 										<span class="sync-badge {lsc.cls}">{lsc.label}</span>
@@ -718,60 +800,37 @@
 								</td>
 								<td class="col-actions">
 									<div class="action-btns">
-										{#if flow.onInstance}
-											<a href={flow.url} target="_blank" rel="noopener noreferrer" class="action-btn action-designer" title="Open in Designer">
-												<ExternalLink size={14} />
-											</a>
-										{/if}
 										{#if flow.githubUrl}
 											<a href={flow.githubUrl} target="_blank" rel="noopener noreferrer" class="action-btn action-github" title="View on GitHub">
 												<Github size={14} />
 											</a>
 										{/if}
-										{#if flow.onInstance && flow.syncStatus === 'modified'}
-											<button class="action-btn action-diff" onclick={() => openDiff(flow)} title="View changes">
+										{#if flow.syncStatus === 'modified'}
+											<button class="action-btn action-diff" onclick={() => openDiff(flow)} title="View changes vs GitHub">
 												<FileDiff size={14} />
 											</button>
 										{/if}
-										{#if flow.onInstance}
-											<button class="action-btn action-results" onclick={() => openResults(flow)} title="E2E results">
-												<FileText size={14} />
-											</button>
-											<button
-												class="action-btn {flow.running ? 'action-stop' : 'action-start'}"
-												onclick={() => toggleFlow(flow)}
-												disabled={togglingFlowIds.has(flow.flowId)}
-												title={flow.running ? 'Stop' : 'Start'}
-											>
-												{#if togglingFlowIds.has(flow.flowId)}
-													<Loader2 size={14} class="spinning" />
-												{:else if flow.running}
-													<Square size={14} />
-												{:else}
-													<Play size={14} />
-												{/if}
-											</button>
-										{/if}
-										{#if flow.onInstance}
-											<button
-												class="action-btn action-download"
-												onclick={() => downloadFlow(flow)}
-												disabled={isDownloading.has(flow.name)}
-												title="Download to local"
-											>
-												{#if isDownloading.has(flow.name)}
-													<Loader2 size={14} class="spinning" />
-												{:else}
-													<Download size={14} />
-												{/if}
-											</button>
-										{/if}
-										{#if flow.onLocal}
+										<button class="action-btn action-results" onclick={() => openResults(flow)} title="E2E results">
+											<FileText size={14} />
+										</button>
+										<button
+											class="action-btn action-download"
+											onclick={() => downloadFlow(flow)}
+											disabled={isDownloading.has(flow.name)}
+											title="Download to local"
+										>
+											{#if isDownloading.has(flow.name)}
+												<Loader2 size={14} class="spinning" />
+											{:else}
+												<Download size={14} />
+											{/if}
+										</button>
+										{#if flow.localSyncStatus != null}
 											<button
 												class="action-btn action-upload"
-												onclick={() => uploadFlow(flow)}
+												onclick={() => uploadFlow({ ...flow, localPath: flow.localPath })}
 												disabled={isUploading.has(flow.name)}
-												title={flow.onInstance ? 'Upload to instance (update)' : 'Upload to instance (create)'}
+												title="Upload from local (update)"
 											>
 												{#if isUploading.has(flow.name)}
 													<Loader2 size={14} class="spinning" />
@@ -780,9 +839,212 @@
 												{/if}
 											</button>
 										{/if}
-										{#if flow.onInstance}
-											<button class="action-btn action-delete" onclick={() => confirmDelete(flow)} title="Delete">
-												<Trash2 size={14} />
+										<button class="action-btn action-delete" onclick={() => confirmDelete(flow)} title="Delete">
+											<Trash2 size={14} />
+										</button>
+									</div>
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			{/if}
+		</div>
+
+		<!-- Floating action bar -->
+		{#if appmixerSelectedIds.size > 0}
+			<div class="e2e-floating-bar">
+				<span class="e2e-floating-count">{appmixerSelectedIds.size} flow{appmixerSelectedIds.size > 1 ? 's' : ''} selected</span>
+				<span class="e2e-floating-divider"></span>
+				<Button variant="outline" size="sm" onclick={() => appmixerSelectedIds = new Set()}>Clear</Button>
+				<Button size="sm" onclick={openSyncDialog}>Sync to GitHub</Button>
+			</div>
+		{/if}
+
+	{:else}
+		<!-- ==================== LOCAL TAB ==================== -->
+
+		<!-- Stats bar -->
+		<div class="e2e-stats-bar">
+			<button class="e2e-stat" class:active={!localGithubSyncFilter && !localAppmixerSyncFilter} onclick={() => { localGithubSyncFilter = ''; localAppmixerSyncFilter = ''; }}>
+				<span class="e2e-stat-value">{localStats.total}</span>
+				<span class="e2e-stat-label">Total</span>
+			</button>
+			<span class="e2e-stat-divider"></span>
+			<button class="e2e-stat stat-match" class:active={localGithubSyncFilter === 'match'} onclick={() => localGithubSyncFilter = localGithubSyncFilter === 'match' ? '' : 'match'}>
+				<span class="e2e-stat-value">{localSyncStatusLoading ? '...' : localStats.githubMatch}</span>
+				<span class="e2e-stat-label">GH In Sync</span>
+			</button>
+			<button class="e2e-stat stat-modified" class:active={localGithubSyncFilter === 'modified'} onclick={() => localGithubSyncFilter = localGithubSyncFilter === 'modified' ? '' : 'modified'}>
+				<span class="e2e-stat-value">{localSyncStatusLoading ? '...' : localStats.githubModified}</span>
+				<span class="e2e-stat-label">GH Modified</span>
+			</button>
+			<button class="e2e-stat stat-local-only" class:active={localGithubSyncFilter === 'local_only'} onclick={() => localGithubSyncFilter = localGithubSyncFilter === 'local_only' ? '' : 'local_only'}>
+				<span class="e2e-stat-value">{localSyncStatusLoading ? '...' : localStats.localOnly}</span>
+				<span class="e2e-stat-label">No GitHub</span>
+			</button>
+			<span class="e2e-stat-divider"></span>
+			<button class="e2e-stat stat-running" class:active={localAppmixerSyncFilter === 'match' || localAppmixerSyncFilter === 'modified'} onclick={() => {
+				if (localAppmixerSyncFilter === 'match' || localAppmixerSyncFilter === 'modified') localAppmixerSyncFilter = '';
+				else localAppmixerSyncFilter = 'match';
+			}}>
+				<span class="e2e-stat-value">{localSyncStatusLoading ? '...' : localStats.onAppmixer}</span>
+				<span class="e2e-stat-label">On Instance</span>
+			</button>
+			<button class="e2e-stat stat-server-only" class:active={localAppmixerSyncFilter === 'local_only'} onclick={() => localAppmixerSyncFilter = localAppmixerSyncFilter === 'local_only' ? '' : 'local_only'}>
+				<span class="e2e-stat-value">{localSyncStatusLoading ? '...' : localStats.notOnAppmixer}</span>
+				<span class="e2e-stat-label">Not on Instance</span>
+			</button>
+		</div>
+
+		<!-- Filter bar -->
+		<div class="e2e-filter-bar">
+			<input type="text" placeholder="Search flows..." bind:value={localSearch} class="e2e-search" />
+			<select bind:value={localGithubSyncFilter} class="e2e-select">
+				<option value="">All GitHub Sync</option>
+				<option value="match">In Sync</option>
+				<option value="modified">Modified</option>
+				<option value="local_only">Local Only</option>
+				<option value="error">Error</option>
+			</select>
+			<select bind:value={localAppmixerSyncFilter} class="e2e-select">
+				<option value="">All Appmixer Sync</option>
+				<option value="match">Match</option>
+				<option value="modified">Modified</option>
+				<option value="local_only">Not on Instance</option>
+				<option value="error">Error</option>
+			</select>
+			{#if localSearch || localGithubSyncFilter || localAppmixerSyncFilter}
+				<button class="e2e-clear-btn" onclick={() => { localSearch = ''; localGithubSyncFilter = ''; localAppmixerSyncFilter = ''; }}>Clear</button>
+			{/if}
+			<span class="e2e-count">{localFilteredFlows.length} of {localMergedFlows().length} flows</span>
+		</div>
+
+		<!-- Local flow table -->
+		<div class="e2e-table-wrap">
+			{#if localFlowsLoading}
+				<div class="e2e-loading">
+					<Loader2 class="h-5 w-5 spinning" />
+					<span>Loading local flows...</span>
+				</div>
+			{:else if localFilteredFlows.length === 0}
+				<div class="e2e-empty">No local E2E flows found</div>
+			{:else}
+				<table class="e2e-table">
+					<thead>
+						<tr>
+							<th class="col-check">
+								{#if localSelectableFlows.length > 0}
+									<input type="checkbox" checked={localAllSelected} onchange={toggleLocalSelectAll} />
+								{/if}
+							</th>
+							<th class="col-name">Flow Name</th>
+							<th class="col-status">Status</th>
+							<th class="col-sync">GitHub Sync</th>
+							<th class="col-sync">Appmixer Sync</th>
+							<th class="col-actions">Actions</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each localFilteredFlows as flow (flow.name)}
+							{@const selectable = isLocalSelectable(flow)}
+							<tr class:selected={localSelectedNames.has(flow.name)}>
+								<td class="col-check">
+									{#if selectable}
+										<input type="checkbox" checked={localSelectedNames.has(flow.name)} onchange={() => toggleLocalSelection(flow.name)} />
+									{/if}
+								</td>
+								<td class="col-name">
+									<span class="flow-name">{flow.name}</span>
+									{#if flow.appmixerFlowId && designerBaseUrl}
+										<a href="{designerBaseUrl}/designer/{flow.appmixerFlowId}" target="_blank" rel="noopener noreferrer" class="flow-id-link" title="Open in Designer: {flow.appmixerFlowId}">
+											{flow.appmixerFlowId.slice(0, 8)}...
+										</a>
+									{/if}
+								</td>
+								<td class="col-status">
+									{#if flow.appmixerFlowId}
+										<div class="status-with-toggle">
+											{#if flow.appmixerStage === 'running'}
+												<span class="status-badge status-running">Running</span>
+											{:else}
+												<span class="status-badge status-stopped">Stopped</span>
+											{/if}
+											<button
+												class="action-btn {flow.appmixerStage === 'running' ? 'action-stop' : 'action-start'}"
+												onclick={() => toggleFlow(flow)}
+												disabled={togglingFlowIds.has(flow.appmixerFlowId)}
+												title={flow.appmixerStage === 'running' ? 'Stop' : 'Start'}
+											>
+												{#if togglingFlowIds.has(flow.appmixerFlowId)}
+													<Loader2 size={14} class="spinning" />
+												{:else if flow.appmixerStage === 'running'}
+													<Square size={14} />
+												{:else}
+													<Play size={14} />
+												{/if}
+											</button>
+										</div>
+									{:else}
+										<span class="text-muted">---</span>
+									{/if}
+								</td>
+								<td class="col-sync">
+									{#if flow.githubSyncStatus == null}
+										<span class="sync-badge-loading"></span>
+									{:else}
+										{@const sc = syncStatusConfig[flow.githubSyncStatus] || syncStatusConfig.error}
+										<span class="sync-badge {sc.cls}">{sc.label}</span>
+									{/if}
+								</td>
+								<td class="col-sync">
+									{#if flow.appmixerSyncStatus == null}
+										<span class="sync-badge-loading"></span>
+									{:else}
+										{@const asc = localSyncStatusConfig[flow.appmixerSyncStatus] || localSyncStatusConfig.error}
+										<span class="sync-badge {asc.cls}">{asc.label}</span>
+									{/if}
+								</td>
+								<td class="col-actions">
+									<div class="action-btns">
+										<!-- Upload to Appmixer (always available) -->
+										<button
+											class="action-btn action-upload"
+											onclick={() => uploadFlow(flow)}
+											disabled={isUploading.has(flow.name)}
+											title={flow.appmixerFlowId ? 'Upload to Appmixer (update)' : 'Upload to Appmixer (create)'}
+										>
+											{#if isUploading.has(flow.name)}
+												<Loader2 size={14} class="spinning" />
+											{:else}
+												<Upload size={14} />
+											{/if}
+										</button>
+										<!-- Download from Appmixer (only if flow exists on instance) -->
+										{#if flow.appmixerSyncStatus && flow.appmixerSyncStatus !== 'local_only'}
+											<button
+												class="action-btn action-download"
+												onclick={() => downloadFlow(flow)}
+												disabled={isDownloading.has(flow.name)}
+												title="Download from Appmixer"
+											>
+												{#if isDownloading.has(flow.name)}
+													<Loader2 size={14} class="spinning" />
+												{:else}
+													<Download size={14} />
+												{/if}
+											</button>
+										{/if}
+										<!-- View on GitHub -->
+										{#if flow.githubUrl}
+											<a href={flow.githubUrl} target="_blank" rel="noopener noreferrer" class="action-btn action-github" title="View on GitHub">
+												<Github size={14} />
+											</a>
+										{/if}
+										<!-- Diff vs GitHub -->
+										{#if flow.githubSyncStatus === 'modified' && flow.appmixerFlowId}
+											<button class="action-btn action-diff" onclick={() => openDiff(flow)} title="View changes vs GitHub">
+												<FileDiff size={14} />
 											</button>
 										{/if}
 									</div>
@@ -795,11 +1057,11 @@
 		</div>
 
 		<!-- Floating action bar -->
-		{#if selectedFlowIds.size > 0}
+		{#if localSelectedNames.size > 0}
 			<div class="e2e-floating-bar">
-				<span class="e2e-floating-count">{selectedFlowIds.size} flow{selectedFlowIds.size > 1 ? 's' : ''} selected</span>
+				<span class="e2e-floating-count">{localSelectedNames.size} flow{localSelectedNames.size > 1 ? 's' : ''} selected</span>
 				<span class="e2e-floating-divider"></span>
-				<Button variant="outline" size="sm" onclick={clearSelection}>Clear</Button>
+				<Button variant="outline" size="sm" onclick={() => localSelectedNames = new Set()}>Clear</Button>
 				<Button size="sm" onclick={openSyncDialog}>Sync to GitHub</Button>
 			</div>
 		{/if}
@@ -849,7 +1111,7 @@
 				<div>
 					<h3>Flow Changes</h3>
 					{#if diffFlow}
-						<p class="modal-subtitle">{diffFlow.name} — instance vs GitHub</p>
+						<p class="modal-subtitle">{diffFlow.name} — vs GitHub</p>
 					{/if}
 				</div>
 				<button class="modal-close" onclick={closeDiffDialog}><X size={16} /></button>
@@ -1023,12 +1285,12 @@
 							<input type="text" bind:value={syncTargetBranch} disabled={isSyncing} class="e2e-input" />
 						</label>
 						<div>
-							<span class="modal-form-label">Flows to sync ({selectedFlows.length})</span>
+							<span class="modal-form-label">Flows to sync ({activeTab === 'appmixer' ? appmixerSelectedFlows.length : localSelectedFlows.length})</span>
 							<div class="sync-flow-list">
-								{#each selectedFlows as flow}
+								{#each activeTab === 'appmixer' ? appmixerSelectedFlows : localSelectedFlows as flow}
 									<div class="sync-flow-item">
 										<span>{flow.name}</span>
-										<span class="sync-flow-path">{flow.githubPath || generateFlowPath(flow.connector, flow.name)}</span>
+										<span class="sync-flow-path">{flow.githubPath || generateFlowPath(flow.connector || connectorName, flow.name)}</span>
 									</div>
 								{/each}
 							</div>
@@ -1120,6 +1382,52 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	/* ===== Tab Bar ===== */
+	.e2e-tab-bar {
+		display: flex;
+		align-items: center;
+		gap: 0;
+		padding: 0 16px;
+		border-bottom: 1px solid var(--color-border);
+		background: var(--color-card);
+	}
+
+	.e2e-tab {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 8px 16px;
+		border: none;
+		background: transparent;
+		font-size: 12px;
+		font-weight: 500;
+		color: var(--color-muted-foreground);
+		cursor: pointer;
+		border-bottom: 2px solid transparent;
+		margin-bottom: -1px;
+		transition: color 0.15s, border-color 0.15s;
+	}
+	.e2e-tab:hover {
+		color: var(--color-foreground);
+	}
+	.e2e-tab.active {
+		color: var(--color-foreground);
+		border-bottom-color: var(--color-primary);
+	}
+
+	.e2e-tab-count {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 18px;
+		height: 18px;
+		padding: 0 5px;
+		border-radius: 9999px;
+		background: var(--color-muted);
+		font-size: 10px;
+		font-weight: 600;
 	}
 
 	.e2e-loading {
@@ -1280,10 +1588,9 @@
 	.e2e-table tr.selected td { background: rgba(59, 130, 246, 0.06); }
 
 	.col-check { width: 36px; }
-	.col-sources { width: 70px; }
-	.col-status { width: 80px; }
-	.col-sync { width: 90px; }
-	.col-local-sync { width: 90px; }
+	.col-status { width: 110px; }
+	.col-sync { width: 100px; }
+	.col-local-sync { width: 100px; }
 	.col-actions { width: 200px; }
 
 	.flow-name {
@@ -1295,26 +1602,25 @@
 		max-width: 280px;
 	}
 
-	/* Source icons */
-	.source-icons {
+	.flow-id-link {
+		display: inline-block;
+		font-size: 10px;
+		font-family: "SF Mono", "Fira Code", monospace;
+		color: #2563eb;
+		text-decoration: none;
+		margin-top: 1px;
+	}
+	.flow-id-link:hover {
+		text-decoration: underline;
+	}
+
+	/* Badges */
+	.status-with-toggle {
 		display: flex;
 		align-items: center;
 		gap: 4px;
 	}
-	.source-icon {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 22px;
-		height: 22px;
-		border-radius: var(--radius-sm);
-		border: 1px solid;
-	}
-	.source-instance { color: #2563eb; border-color: #bfdbfe; background: #eff6ff; }
-	.source-local { color: #7c3aed; border-color: #c4b5fd; background: #f5f3ff; }
-	.source-github { color: #6b7280; border-color: #e5e7eb; background: #f9fafb; }
 
-	/* Badges */
 	.status-badge {
 		display: inline-flex;
 		align-items: center;
@@ -1432,7 +1738,6 @@
 		width: 100%;
 	}
 	.modal-sm { max-width: 440px; }
-	.modal-md { max-width: 540px; }
 	.modal-lg { max-width: 680px; }
 	.modal-xl { max-width: 900px; }
 

@@ -9,6 +9,20 @@ function getHash(content) {
     return crypto.createHash('md5').update(content).digest('hex');
 }
 
+/**
+ * Returns the list of directories to scan for test-flow-*.json files,
+ * matching the same locations as the CLI's listTestFlows tool.
+ */
+function getTestFlowLocations(connectorsDir, connector) {
+    const connectorDir = path.join(connectorsDir, connector);
+    return [
+        connectorDir,
+        path.join(connectorDir, 'ai-artifacts', 'test-flows'),
+        path.join(connectorDir, 'artifacts', 'test-flows'),
+        path.join(connectorDir, 'artifacts', 'ai-artifacts', 'test-flows')
+    ];
+}
+
 export async function GET({ url }) {
     try {
         const connector = url.searchParams.get('connector');
@@ -17,28 +31,43 @@ export async function GET({ url }) {
         const connectorsDir = getConnectorsDir();
         if (!connectorsDir) return json({ localFlows: [], error: 'Connectors directory not configured' });
 
-        const e2eDir = path.join(connectorsDir, connector, 'artifacts', 'e2e-flows');
-        if (!fs.existsSync(e2eDir)) return json({ localFlows: [] });
-
-        const files = fs.readdirSync(e2eDir).filter(f => f.startsWith('test-flow-') && f.endsWith('.json'));
         const localFlows = [];
+        const seenNames = new Set();
+        const locations = getTestFlowLocations(connectorsDir, connector);
 
-        for (const fileName of files) {
-            const filePath = path.join(e2eDir, fileName);
+        for (const dir of locations) {
+            if (!fs.existsSync(dir)) continue;
+
+            let files;
             try {
-                const raw = fs.readFileSync(filePath, 'utf-8');
-                const parsed = JSON.parse(raw);
-                const cleaned = cleanFlowForComparison(parsed);
-                const localHash = getHash(JSON.stringify(cleaned, null, 4));
-                localFlows.push({
-                    name: parsed.name || fileName,
-                    connector,
-                    localPath: path.join(connector, 'artifacts', 'e2e-flows', fileName),
-                    fileName,
-                    localHash
-                });
-            } catch (e) {
-                console.error(`Failed to parse local flow ${filePath}:`, e.message);
+                files = fs.readdirSync(dir).filter(f => f.startsWith('test-flow') && f.endsWith('.json'));
+            } catch { continue; }
+
+            for (const fileName of files) {
+                const filePath = path.join(dir, fileName);
+                try {
+                    const raw = fs.readFileSync(filePath, 'utf-8');
+                    const parsed = JSON.parse(raw);
+                    // Only include files that have a "flow" property (valid test flows)
+                    if (!parsed.flow) continue;
+                    const name = parsed.name || fileName;
+                    // Deduplicate by name (first found wins)
+                    if (seenNames.has(name)) continue;
+                    seenNames.add(name);
+                    const cleaned = cleanFlowForComparison(parsed);
+                    const localHash = getHash(JSON.stringify(cleaned, null, 4));
+                    // Store the path relative to connectorsDir
+                    const relativePath = path.relative(connectorsDir, filePath);
+                    localFlows.push({
+                        name,
+                        connector,
+                        localPath: relativePath,
+                        fileName,
+                        localHash
+                    });
+                } catch (e) {
+                    console.error(`Failed to parse local flow ${filePath}:`, e.message);
+                }
             }
         }
 

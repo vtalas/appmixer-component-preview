@@ -17,37 +17,53 @@ function compareFlows(serverFlow, githubFlow) {
     return serverHash === githubHash ? 'match' : 'modified';
 }
 
+function getTestFlowDirs(connectorsDir, connectorName) {
+    const connectorDir = path.join(connectorsDir, connectorName);
+    return [
+        connectorDir,
+        path.join(connectorDir, 'ai-artifacts', 'test-flows'),
+        path.join(connectorDir, 'artifacts', 'test-flows'),
+        path.join(connectorDir, 'artifacts', 'ai-artifacts', 'test-flows')
+    ];
+}
+
 function buildLocalFlowMap(connectorsDir) {
     const localMap = new Map();
     if (!connectorsDir || !fs.existsSync(connectorsDir)) return localMap;
 
-    let connectorDirs;
+    // Scan all connector directories (connectorsDir already points at the connectors root)
+    let connectorNames = [];
     try {
-        connectorDirs = fs.readdirSync(connectorsDir, { withFileTypes: true })
-            .filter(d => d.isDirectory());
+        connectorNames = fs.readdirSync(connectorsDir, { withFileTypes: true })
+            .filter(d => d.isDirectory())
+            .map(d => d.name);
     } catch { return localMap; }
 
-    for (const dir of connectorDirs) {
-        const e2eDir = path.join(connectorsDir, dir.name, 'artifacts', 'e2e-flows');
-        if (!fs.existsSync(e2eDir)) continue;
+    for (const connectorName of connectorNames) {
+        const dirs = getTestFlowDirs(connectorsDir, connectorName);
+        for (const dir of dirs) {
+            if (!fs.existsSync(dir)) continue;
 
-        let files;
-        try {
-            files = fs.readdirSync(e2eDir).filter(f => f.startsWith('test-flow-') && f.endsWith('.json'));
-        } catch { continue; }
-
-        for (const fileName of files) {
+            let files;
             try {
-                const raw = fs.readFileSync(path.join(e2eDir, fileName), 'utf-8');
-                const parsed = JSON.parse(raw);
-                if (!parsed.name) continue;
-                const cleaned = cleanFlowForComparison(parsed);
-                const localHash = getHash(JSON.stringify(cleaned, null, 4));
-                localMap.set(parsed.name, {
-                    localPath: path.join(dir.name, 'artifacts', 'e2e-flows', fileName),
-                    localHash
-                });
-            } catch { /* skip unparseable files */ }
+                files = fs.readdirSync(dir).filter(f => f.startsWith('test-flow') && f.endsWith('.json'));
+            } catch { continue; }
+
+            for (const fileName of files) {
+                try {
+                    const filePath = path.join(dir, fileName);
+                    const raw = fs.readFileSync(filePath, 'utf-8');
+                    const parsed = JSON.parse(raw);
+                    if (!parsed.flow || !parsed.name) continue;
+                    if (localMap.has(parsed.name)) continue; // deduplicate
+                    const cleaned = cleanFlowForComparison(parsed);
+                    const localHash = getHash(JSON.stringify(cleaned, null, 4));
+                    localMap.set(parsed.name, {
+                        localPath: path.relative(connectorsDir, filePath),
+                        localHash
+                    });
+                } catch { /* skip unparseable files */ }
+            }
         }
     }
     return localMap;

@@ -12,7 +12,7 @@ export async function POST({ request }) {
         } else {
             await stopFlow(flowId);
         }
-        return json({ success: true, action });
+        return json({ success: true, action, newStage: action === 'start' ? 'running' : 'stopped' });
     } catch (e) {
         console.error('Failed to toggle flow:', e);
         return error(500, e.message || 'Failed to toggle flow');
