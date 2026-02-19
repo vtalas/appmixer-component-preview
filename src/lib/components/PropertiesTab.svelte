@@ -2,7 +2,7 @@
 	import InspectorEditor from './InspectorEditor.svelte';
 	import SchemaPreview from './SchemaPreview.svelte';
 
-	let { componentJson, onInspectorInputChange, onRequiredChange, onTypeChange, onOptionsChange, onFieldsChange, onSourceChange } = $props();
+	let { componentJson, onInspectorInputChange, onRequiredChange, onTypeChange, onOptionsChange, onFieldsChange, onSourceChange, onFormValueChange } = $props();
 
 	function createInputChangeHandler() {
 		return (inputKey, field, value) => {
@@ -64,6 +64,7 @@
 			onOptionsChange={createOptionsChangeHandler()}
 			onFieldsChange={createFieldsChangeHandler()}
 			onSourceChange={createSourceChangeHandler()}
+			{onFormValueChange}
 		/>
 	{:else if componentJson.properties?.schema}
 		<div class="schema-section">

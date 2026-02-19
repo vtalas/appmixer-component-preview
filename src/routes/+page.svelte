@@ -1376,6 +1376,10 @@
 						<div class="properties-scroll">
 							<ComponentPreview
 								componentJson={comp}
+								componentPath={selectedComponent.path}
+								connectorsDir={fileSync.directoryPath || ''}
+								{testPlanData}
+								onTestPlanUpdated={handleTestPlanUpdated}
 								onInspectorInputChange={handleInspectorInputChange}
 								onRequiredChange={handleRequiredChange}
 								onTypeChange={handleTypeChange}

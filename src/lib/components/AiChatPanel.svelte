@@ -26,7 +26,9 @@
 		cwd = '',
 		storageKey = '',
 		onDone,
-		allowedTools = []
+		allowedTools = [],
+		autoSendPrompt = '',
+		onAutoSendComplete
 	} = $props();
 
 	// ── Session persistence ──────────────────────────────────────────────
@@ -81,6 +83,15 @@
 
 	onDestroy(() => {
 		if (terminalAbort) terminalAbort.abort();
+	});
+
+	// Auto-send prompt when set by parent (e.g. "Add Component" flow)
+	$effect(() => {
+		if (autoSendPrompt && !isStreaming && !terminalRunning) {
+			inputValue = autoSendPrompt;
+			onAutoSendComplete?.();
+			setTimeout(() => sendMessage(), 0);
+		}
 	});
 
 	// Debug log visible in the UI (since DevTools may not be available).

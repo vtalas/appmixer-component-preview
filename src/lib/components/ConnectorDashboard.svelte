@@ -2,7 +2,7 @@
 	import * as Card from '$lib/components/ui/card';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
-	import { Package, FlaskConical, Box, Sparkles, Loader2, X, MessageSquare, Workflow } from 'lucide-svelte';
+	import { Package, FlaskConical, Box, Sparkles, Loader2, X, MessageSquare, Workflow, Plus } from 'lucide-svelte';
 	import TestPlanViewer from '$lib/components/TestPlanViewer.svelte';
 	import AiChatPanel from '$lib/components/AiChatPanel.svelte';
 	import E2EFlowsPanel from '$lib/components/E2EFlowsPanel.svelte';
@@ -32,6 +32,16 @@
 	let showTestPlan = $state(false);
 	let showE2EFlows = $state(false);
 	let showClaudeChat = $state(false);
+
+	// Add Component form state
+	let showAddComponent = $state(false);
+	let newComponentName = $state('');
+	let newComponentModule = $state('');
+	let newComponentDescription = $state('');
+	let newComponentDocsUrl = $state('');
+	let newComponentContext = $state('');
+	let creatingComponent = $state(false);
+	let autoSendPrompt = $state('');
 
 	// Open E2E panel if initialE2ETab is set
 	$effect(() => {
@@ -159,6 +169,8 @@ When creating PRs or issues, relate them to the ${connector.name} connector work
 		};
 	});
 
+	let existingModules = $derived(connector.modules.map(m => m.name));
+
 	let allComponents = $derived.by(() => {
 		const list = [];
 		for (const module of connector.modules) {
@@ -181,6 +193,81 @@ When creating PRs or issues, relate them to the ${connector.name} connector work
 		if (type === 'Polling') return 'secondary';
 		if (type === 'Trigger') return 'default';
 		return 'outline';
+	}
+
+	function humanize(name) {
+		return name.replace(/([a-z])([A-Z])/g, '$1 $2');
+	}
+
+	async function createComponent() {
+		if (!newComponentName.trim() || !newComponentModule.trim()) return;
+
+		const name = newComponentName.trim();
+		const module = newComponentModule.trim();
+
+		creatingComponent = true;
+		try {
+			const componentPath = `${connector.name}/${module}/${name}`;
+			const fullName = `appmixer.${connector.name}.${module}.${name}`;
+			const label = humanize(name);
+
+			const minimalJson = {
+				name: fullName,
+				label,
+				...(newComponentDescription.trim() ? { description: newComponentDescription.trim() } : {})
+			};
+
+			const response = await fetch(`/api/component?path=${encodeURIComponent(componentPath)}`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ componentJson: minimalJson })
+			});
+
+			if (!response.ok) {
+				const data = await response.json();
+				console.error('Failed to create component:', data.error);
+				return;
+			}
+
+			// Refresh tree to pick up new folder
+			onRefreshTree?.();
+
+			// Build prompt for Claude
+			let prompt = `Create a new Appmixer component "${name}" in the ${module}/ module for the ${connector.name} connector.\n\n`;
+			prompt += `Component path: ${connector.name}/${module}/${name}/\n`;
+			prompt += `Component full name: ${fullName}\n`;
+
+			if (newComponentDescription.trim()) {
+				prompt += `\nDescription: ${newComponentDescription.trim()}\n`;
+			}
+			if (newComponentDocsUrl.trim()) {
+				prompt += `\nAPI Documentation: ${newComponentDocsUrl.trim()}\nPlease read this URL to understand the API endpoint and its parameters.\n`;
+			}
+			if (newComponentContext.trim()) {
+				prompt += `\nAdditional context: ${newComponentContext.trim()}\n`;
+			}
+
+			prompt += `\nGenerate the following files in the component directory:\n`;
+			prompt += `1. component.json — full Appmixer component definition with proper inPorts, outPorts, properties, inspector configuration\n`;
+			prompt += `2. ${name}.js — the component implementation\n\n`;
+			prompt += `Follow Appmixer connector patterns. Look at existing components in this connector for reference.`;
+
+			// Open Claude chat and auto-send
+			showClaudeChat = true;
+			autoSendPrompt = prompt;
+
+			// Reset form
+			showAddComponent = false;
+			newComponentName = '';
+			newComponentModule = '';
+			newComponentDescription = '';
+			newComponentDocsUrl = '';
+			newComponentContext = '';
+		} catch (err) {
+			console.error('Failed to create component:', err);
+		} finally {
+			creatingComponent = false;
+		}
 	}
 
 	async function handleComponentGenerated(componentJson) {
@@ -400,7 +487,104 @@ When creating PRs or issues, relate them to the ${connector.name} connector work
 
 				<!-- Components Table -->
 				<div class="components-section">
-					<h3 class="section-title">Components</h3>
+					<div class="section-title-row">
+						<h3 class="section-title">Components</h3>
+						{#if isConnected}
+							<Button
+								variant="outline"
+								size="sm"
+								onclick={() => showAddComponent = !showAddComponent}
+							>
+								{#if showAddComponent}
+									<X class="h-3.5 w-3.5 mr-1" />
+									Cancel
+								{:else}
+									<Plus class="h-3.5 w-3.5 mr-1" />
+									Add Component
+								{/if}
+							</Button>
+						{/if}
+					</div>
+
+					{#if showAddComponent}
+						<div class="add-component-form">
+							<div class="form-row">
+								<div class="form-field">
+									<label class="form-label" for="comp-name">Component Name <span class="required">*</span></label>
+									<input
+										id="comp-name"
+										type="text"
+										class="form-input"
+										placeholder="e.g. ListFolders"
+										bind:value={newComponentName}
+									/>
+								</div>
+								<div class="form-field">
+									<label class="form-label" for="comp-module">Module <span class="required">*</span></label>
+									<input
+										id="comp-module"
+										type="text"
+										class="form-input"
+										placeholder="e.g. core"
+										list="module-list"
+										bind:value={newComponentModule}
+									/>
+									<datalist id="module-list">
+										{#each existingModules as mod}
+											<option value={mod} />
+										{/each}
+									</datalist>
+								</div>
+							</div>
+							<div class="form-field">
+								<label class="form-label" for="comp-desc">Description</label>
+								<textarea
+									id="comp-desc"
+									class="form-input form-textarea"
+									placeholder="What does this component do?"
+									rows="2"
+									bind:value={newComponentDescription}
+								></textarea>
+							</div>
+							<div class="form-field">
+								<label class="form-label" for="comp-docs">Docs URL</label>
+								<input
+									id="comp-docs"
+									type="url"
+									class="form-input"
+									placeholder="https://developer.example.com/api/..."
+									bind:value={newComponentDocsUrl}
+								/>
+							</div>
+							<div class="form-field">
+								<label class="form-label" for="comp-context">Additional Context</label>
+								<textarea
+									id="comp-context"
+									class="form-input form-textarea"
+									placeholder="Any extra info for Claude (auth details, expected behavior, etc.)"
+									rows="2"
+									bind:value={newComponentContext}
+								></textarea>
+							</div>
+							<div class="form-actions">
+								<Button
+									variant="default"
+									size="sm"
+									onclick={createComponent}
+									disabled={!newComponentName.trim() || !newComponentModule.trim() || creatingComponent}
+								>
+									{#if creatingComponent}
+										<Loader2 class="h-3.5 w-3.5 mr-1 spinning" />
+										Creating...
+									{:else}
+										<Sparkles class="h-3.5 w-3.5 mr-1" />
+										Create & Generate
+									{/if}
+								</Button>
+							</div>
+						</div>
+					{/if}
+
 					<div class="components-table">
 						<div class="table-header">
 							<span class="col-name">Name</span>
@@ -445,6 +629,8 @@ When creating PRs or issues, relate them to the ${connector.name} connector work
 					onDone={onRefreshTree}
 					onComponentGenerated={handleComponentGenerated}
 					allowedTools={['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebFetch', 'WebSearch']}
+					{autoSendPrompt}
+					onAutoSendComplete={() => autoSendPrompt = ''}
 				/>
 			</div>
 		{/if}
@@ -785,10 +971,78 @@ When creating PRs or issues, relate them to the ${connector.name} connector work
 		flex-direction: column;
 	}
 
+	.section-title-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		margin-bottom: 8px;
+	}
+
 	.section-title {
 		font-size: 14px;
 		font-weight: 600;
-		margin-bottom: 8px;
+		margin-bottom: 0;
+	}
+
+	/* Add Component Form */
+	.add-component-form {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+		padding: 16px;
+		margin-bottom: 12px;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		background: var(--color-muted);
+	}
+
+	.form-row {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 12px;
+	}
+
+	.form-field {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.form-label {
+		font-size: 12px;
+		font-weight: 500;
+		color: var(--color-foreground);
+	}
+
+	.required {
+		color: #ef4444;
+	}
+
+	.form-input {
+		width: 100%;
+		padding: 6px 10px;
+		font-size: 13px;
+		font-family: inherit;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		background: var(--color-card);
+		color: var(--color-foreground);
+		outline: none;
+	}
+
+	.form-input:focus {
+		border-color: var(--color-ring);
+		box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-ring) 20%, transparent);
+	}
+
+	.form-textarea {
+		resize: vertical;
+		min-height: 40px;
+	}
+
+	.form-actions {
+		display: flex;
+		justify-content: flex-end;
 	}
 
 	.components-table {

@@ -36,7 +36,7 @@
 		{ value: 'filepicker', label: 'File Picker' }
 	];
 
-	let { inspector, schema, portName = 'in', onInputChange, onRequiredChange, onTypeChange, onOptionsChange, onFieldsChange, onSourceChange } = $props();
+	let { inspector, schema, portName = 'in', onInputChange, onRequiredChange, onTypeChange, onOptionsChange, onFieldsChange, onSourceChange, onFormValueChange } = $props();
 
 	// Track expanded options editors
 	let expandedOptionsEditors = $state(new Set());
@@ -111,6 +111,7 @@
 
 	function setInputValue(key, value) {
 		formValues[key] = value;
+		onFormValueChange?.(key, value);
 	}
 
 	// Label editing functions
