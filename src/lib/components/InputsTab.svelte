@@ -254,9 +254,8 @@
 					}
 				}
 
-				// 3. For date-time fields
+				// 3. For date-time fields — store as ISO 8601 (CLI format), display converts automatically
 				if (!generated && type === 'date-time') {
-					// Generate a date ~1 week in the future, ISO 8601 format
 					const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 					future.setMinutes(0, 0, 0);
 					generated = future.toISOString().replace(/\.\d{3}Z$/, 'Z');
@@ -720,7 +719,7 @@
 			</div>
 			<div class="edit-modal-footer">
 				<button class="edit-modal-btn edit-modal-btn-cancel" onclick={() => editingCmd = null}>Cancel</button>
-				<button class="edit-modal-btn edit-modal-btn-save" onclick={saveEditedCommand}>Save</button>
+				<button class="edit-modal-btn edit-modal-btn-save" onclick={() => { const idx = editingCmd?.cmdIndex; saveEditedCommand(); if (idx != null) onRerunCommand?.(idx); }}>Run</button>
 			</div>
 		</div>
 	</div>

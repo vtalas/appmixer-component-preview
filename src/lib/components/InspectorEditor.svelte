@@ -559,8 +559,8 @@
 			{:else if input.type === 'date-time'}
 				<Input
 					type="datetime-local"
-					value={getInputValue(key)?.toString() || ''}
-					oninput={(e) => setInputValue(key, e.currentTarget.value)}
+					value={(() => { const v = getInputValue(key)?.toString() || ''; return v.length > 16 ? v.slice(0, 16) : v; })()}
+					oninput={(e) => { const v = e.currentTarget.value; setInputValue(key, v ? v + ':00Z' : ''); }}
 					class="editor-input"
 				/>
 			{:else if input.type === 'select'}

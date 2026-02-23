@@ -4,6 +4,8 @@
 	import PropertiesTab from './PropertiesTab.svelte';
 	import OutputsTab from './OutputsTab.svelte';
 	import ComponentJsonTab from './ComponentJsonTab.svelte';
+	import BehaviorTab from './BehaviorTab.svelte';
+	import DiffTab from './DiffTab.svelte';
 	import { createCommandRunner, stripAnsi } from '$lib/utils/commandRunner.svelte.js';
 
 	let {
@@ -394,6 +396,8 @@
 				<Tabs.Trigger value="outputs">Outputs</Tabs.Trigger>
 			{/if}
 			<Tabs.Trigger value="component-json">Component JSON</Tabs.Trigger>
+			<Tabs.Trigger value="behavior">Behavior</Tabs.Trigger>
+			<Tabs.Trigger value="diff">Diff</Tabs.Trigger>
 		</Tabs.List>
 
 		{#if hasInPorts}
@@ -444,6 +448,14 @@
 
 		<Tabs.Content value="component-json" class="editor-content">
 			<ComponentJsonTab {componentJson} {onJsonChange} />
+		</Tabs.Content>
+
+		<Tabs.Content value="behavior" class="editor-content">
+			<BehaviorTab {componentPath} />
+		</Tabs.Content>
+
+		<Tabs.Content value="diff" class="editor-content">
+			<DiffTab {componentPath} />
 		</Tabs.Content>
 	</Tabs.Root>
 </div>
