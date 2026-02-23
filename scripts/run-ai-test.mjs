@@ -1,14 +1,4 @@
 #!/usr/bin/env node
-/**
- * Runner script for the LangGraph AI test agent.
- * Spawned by the Tauri app to run AI-powered component tests.
- *
- * Usage:
- *   node run-ai-test.mjs --connectorsDir <path> --connector <name> --component <name> [--cliDir <path>]
- *
- * Environment variables are loaded from <connectorsDir>/.env (same as appmixer CLI).
- * The .env file should contain ANTHROPIC_API_KEY.
- */
 
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
@@ -31,7 +21,7 @@ const {
     maxToolCalls
 } = values;
 
-const cliDir = values.cliDir || process.env.APPMIXER_CLI_DIR || '/usr/local/lib/node_modules/appmixer';
+const cliDir = values.cliDir || process.env.APPMIXER_CLI_DIR || '/Users/vladimir/Projects/appmixer-cli';
 
 if (!connectorsDir || !connector || !component) {
     console.error('Usage: node run-ai-test.mjs --connectorsDir <path> --connector <name> --component <name>');
@@ -65,12 +55,6 @@ try {
     }
 }
 
-if (!process.env.ANTHROPIC_API_KEY) {
-    console.error('[AI-TEST] ERROR: ANTHROPIC_API_KEY is not set.');
-    console.error(`[AI-TEST] Add it to ${connectorsDir}/.env:`);
-    console.error('[AI-TEST]   ANTHROPIC_API_KEY=sk-ant-...');
-    process.exit(1);
-}
 
 // Monkey-patch inquirer to auto-continue (the agent uses it for prompt_continue)
 // We do this before importing the agent so the agent picks up the patched module
@@ -100,7 +84,7 @@ process.chdir(connectorsDir);
 
 try {
     // Dynamically import from the appmixer-cli
-    const agentPath = path.join(cliDir, 'src/ai/src/agents/runAppmixerTest.js');
+    const agentPath = path.join(cliDir, 'src/ai/src/agents/claude/testAgent.js');
     const toolsPath = path.join(cliDir, 'src/ai/src/agents/tools.js');
 
     const testing = await import(pathToFileURL(agentPath).href);
@@ -117,13 +101,15 @@ try {
     }
     console.log(`[AI-TEST] Authentication valid`);
 
-    // Step 2: Run the LangGraph test agent
-    console.log(`[AI-TEST] Running AI test agent...`);
-    const graph = await testing.runAppmixerTest({ connectorsDir, connector, component });
-    await testing.run(graph, { connectorsDir, connector, component });
+    // Step 2: Run the Claude test agent
+    console.log(`[AI-TEST] Running Claude test agent...`);
+    const analysis = await testing.run({ connectorsDir, connector, component });
 
-    console.log(`[AI-TEST] Test completed successfully`);
-    process.exit(0);
+    console.log(`[AI-TEST] Test completed: ${analysis.status}`);
+    if (analysis.status === 'failed') {
+        console.error(`[AI-TEST] Reason: ${analysis.reason}`);
+    }
+    process.exit(analysis.status === 'passed' ? 0 : 1);
 } catch (err) {
     console.error(`[AI-TEST] Error: ${err.message}`);
     console.error(err.stack);

@@ -447,6 +447,7 @@
 
 {#snippet InputField(key, input)}
 	<div class="input-field">
+		<div class="input-definition">
 		<div class="input-label-row">
 			{#if editingLabel === key}
 				<div class="edit-inline">
@@ -531,7 +532,9 @@
 				</select>
 			</label>
 		</div>
+		</div>
 
+		<div class="input-value-section">
 		<div class="input-control">
 			{#if input.type === 'text'}
 				<Input
@@ -657,6 +660,7 @@
 					class="editor-input"
 				/>
 			{/if}
+		</div>
 		</div>
 
 		<!-- Options Editor for select/multiselect -->
@@ -960,12 +964,21 @@
 	.input-field {
 		display: flex;
 		flex-direction: column;
-		padding: 12px 16px;
 		border-bottom: 1px solid var(--color-border);
 	}
 
 	.input-field:last-child {
 		border-bottom: none;
+	}
+
+	.input-definition {
+		padding: 10px 16px 8px;
+		background: var(--color-muted);
+		border-bottom: 1px dashed color-mix(in srgb, var(--color-border) 60%, transparent);
+	}
+
+	.input-value-section {
+		padding: 8px 16px 12px;
 	}
 
 	.input-label-row {
@@ -1311,10 +1324,10 @@
 	/* Options Editor */
 	.options-editor-section,
 	.expression-editor-section {
-		margin-top: 12px;
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-		overflow: hidden;
+		margin-top: 0;
+		padding: 8px 16px 10px;
+		background: var(--color-muted);
+		border-top: 1px dashed color-mix(in srgb, var(--color-border) 60%, transparent);
 	}
 
 	.options-toggle {

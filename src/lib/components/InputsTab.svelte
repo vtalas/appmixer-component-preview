@@ -7,7 +7,7 @@
 	import {
 		Play, Square, Loader2, ChevronDown, ChevronRight,
 		CheckCircle2, XCircle, Clock, Copy, Check,
-		RotateCw, Pencil, Trash2, ExternalLink, Sparkles
+		RotateCw, Pencil, Trash2, ExternalLink, Sparkles, Bot
 	} from 'lucide-svelte';
 	import { stripAnsi } from '$lib/utils/commandRunner.svelte.js';
 
@@ -20,7 +20,9 @@
 		testResults = [],
 		testPlanData = null,
 		onRerunCommand, onDeleteCommand, onEditCommand, onShowInPopup,
-		runningCommand = null
+		runningCommand = null,
+		onRunAiTest = null,
+		aiTestRunning = false
 	} = $props();
 
 	// Collect form values from all ports: { portName: { key: val } }
@@ -522,6 +524,11 @@
 				<Button variant="outline" size="sm" onclick={generateData} title="Auto-fill inputs with test data from other components">
 					<Sparkles class="h-4 w-4 mr-1" /> Generate Data
 				</Button>
+				{#if onRunAiTest}
+					<Button variant="outline" size="sm" onclick={onRunAiTest} disabled={aiTestRunning}>
+						<Bot class="h-4 w-4 mr-1" /> {aiTestRunning ? 'AI Running...' : 'AI Test'}
+					</Button>
+				{/if}
 			{/if}
 		</div>
 	</div>

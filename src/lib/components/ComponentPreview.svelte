@@ -200,6 +200,48 @@
 	function stopTest() {
 		runner.stop();
 		testRunning = false;
+		aiTestRunning = false;
+	}
+
+	// ── AI Test ─────────────────────────────────────────────────────────
+	let aiTestRunning = $state(false);
+
+	function getConnectorsRootDir() {
+		let dir = connectorsDir.replace(/\/+$/, '');
+		if (dir.endsWith('/src/appmixer')) {
+			dir = dir.slice(0, -'/src/appmixer'.length);
+		}
+		return dir;
+	}
+
+	async function runAiTest() {
+		if (!componentName || aiTestRunning) return;
+		aiTestRunning = true;
+		testRunning = true;
+
+		const connectorsRootDir = getConnectorsRootDir();
+		const connectorName = componentPath.split('/')[0];
+		const shellCmd = `node scripts/run-ai-test.mjs --connectorsDir "${connectorsRootDir}" --connector "${connectorName}" --component "${componentName}" < /dev/null 2>&1`;
+
+        console.log("----")
+        console.log(shellCmd)
+
+		try {
+			const { exitCode } = await runner.run(shellCmd, {
+				useAppCwd: true,
+				label: 'AI-TEST'
+			});
+			if (exitCode === 0) {
+				setTimeout(() => { onTestPlanUpdated?.(null); }, 500);
+			}
+		} catch (err) {
+			if (!(err instanceof Error && err.name === 'AbortError')) {
+				runner.appendOutput(`\nFailed to run AI test: ${err}\n`);
+			}
+		} finally {
+			aiTestRunning = false;
+			testRunning = false;
+		}
 	}
 
 	// ── Re-run command ──────────────────────────────────────────────────
@@ -421,6 +463,8 @@
 					onEditCommand={editCommand}
 					onShowInPopup={showInPopup}
 					{runningCommand}
+					onRunAiTest={runAiTest}
+					{aiTestRunning}
 				/>
 			</Tabs.Content>
 		{/if}
