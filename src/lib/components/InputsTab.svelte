@@ -118,9 +118,10 @@
 
 	// ── Command helpers ──────────────────────────────────────────────
 
-	/** Find the balanced JSON object after `-i` in a command string. */
-	function extractInputJsonRange(cmdStr) {
-		const flagMatch = cmdStr.match(/-i\s+'?/);
+	/** Find the balanced JSON object after a flag (e.g. `-i`, `-p`) in a command string. */
+	function extractJsonRange(cmdStr, flag) {
+		const re = new RegExp(`${flag}\\s+'?`);
+		const flagMatch = cmdStr.match(re);
 		if (!flagMatch) return null;
 		let start = flagMatch.index + flagMatch[0].length;
 		if (cmdStr[start] !== '{') return null;
@@ -142,8 +143,12 @@
 		return null;
 	}
 
-	function parseInputJson(cmdStr) {
-		const range = extractInputJsonRange(cmdStr);
+	function extractInputJsonRange(cmdStr) {
+		return extractJsonRange(cmdStr, '-i');
+	}
+
+	function parseJsonFlag(cmdStr, flag) {
+		const range = extractJsonRange(cmdStr, flag);
 		if (!range) return null;
 		const raw = cmdStr.slice(range.start, range.end);
 		try {
@@ -153,12 +158,36 @@
 		}
 	}
 
+	function parseInputJson(cmdStr) {
+		return parseJsonFlag(cmdStr, '-i');
+	}
+
+	/** Extract a simple flag value like `-t 10000` */
+	function parseSimpleFlag(cmdStr, flag) {
+		const re = new RegExp(`${flag}\\s+(\\S+)`);
+		const m = cmdStr.match(re);
+		return m ? m[1] : '';
+	}
+
 	function getBaseCommand(cmdStr) {
-		const range = extractInputJsonRange(cmdStr);
-		if (!range) return cmdStr;
-		let end = range.end;
-		if (cmdStr[end] === "'") end++;
-		return (cmdStr.slice(0, range.flagStart) + cmdStr.slice(end)).replace(/\s+/g, ' ').trim();
+		let result = cmdStr;
+		// Strip -i JSON
+		const iRange = extractJsonRange(result, '-i');
+		if (iRange) {
+			let end = iRange.end;
+			if (result[end] === "'") end++;
+			result = result.slice(0, iRange.flagStart) + result.slice(end);
+		}
+		// Strip -p JSON
+		const pRange = extractJsonRange(result, '-p');
+		if (pRange) {
+			let end = pRange.end;
+			if (result[end] === "'") end++;
+			result = result.slice(0, pRange.flagStart) + result.slice(end);
+		}
+		// Strip -t value
+		result = result.replace(/-t\s+\S+/, '');
+		return result.replace(/\s+/g, ' ').trim();
 	}
 
 	async function copyCommand(cmd, cmdKey) {
@@ -178,19 +207,37 @@
 		if (!cmd) return;
 		const fullCmd = cmd.cmd || cmd.command || '';
 		const inputJson = parseInputJson(fullCmd);
-		editingCmd = { cmdIndex, inputJson: inputJson || '{}', error: null };
+		const propsJson = parseJsonFlag(fullCmd, '-p');
+		const tickValue = parseSimpleFlag(fullCmd, '-t');
+		editingCmd = {
+			cmdIndex,
+			inputJson: inputJson || '{}',
+			propsJson: propsJson || '',
+			tickValue: tickValue || '',
+			error: null
+		};
 	}
 
 	function saveEditedCommand() {
 		if (!editingCmd || !onEditCommand) return;
-		const { cmdIndex, inputJson } = editingCmd;
+		const { cmdIndex, inputJson, propsJson, tickValue } = editingCmd;
+		// Validate -i JSON
 		try {
 			JSON.parse(inputJson);
 		} catch {
-			editingCmd = { ...editingCmd, error: 'Invalid JSON. Please fix the syntax and try again.' };
+			editingCmd = { ...editingCmd, error: 'Invalid -i JSON. Please fix the syntax.' };
 			return;
 		}
-		onEditCommand(cmdIndex, inputJson);
+		// Validate -p JSON if provided
+		if (propsJson.trim()) {
+			try {
+				JSON.parse(propsJson);
+			} catch {
+				editingCmd = { ...editingCmd, error: 'Invalid -p JSON. Please fix the syntax.' };
+				return;
+			}
+		}
+		onEditCommand(cmdIndex, inputJson, propsJson.trim() || null, tickValue.trim() || null);
 		editingCmd = null;
 	}
 </script>
@@ -411,10 +458,25 @@
 				<label class="edit-modal-label">-i JSON input</label>
 				<textarea
 					class="edit-modal-textarea"
-					rows="16"
+					rows="12"
 					bind:value={editingCmd.inputJson}
 					spellcheck="false"
 				></textarea>
+				<label class="edit-modal-label edit-modal-label-gap">-p Properties JSON <span class="edit-modal-optional">(optional)</span></label>
+				<textarea
+					class="edit-modal-textarea"
+					rows="4"
+					bind:value={editingCmd.propsJson}
+					spellcheck="false"
+					placeholder={'{"key": "value"}'}
+				></textarea>
+				<label class="edit-modal-label edit-modal-label-gap">-t Tick Period <span class="edit-modal-optional">(optional, ms)</span></label>
+				<input
+					class="edit-modal-input"
+					type="text"
+					bind:value={editingCmd.tickValue}
+					placeholder="10000"
+				/>
 			</div>
 			<div class="edit-modal-footer">
 				<button class="edit-modal-btn edit-modal-btn-cancel" onclick={() => editingCmd = null}>Cancel</button>
@@ -827,6 +889,36 @@
 		margin-bottom: 12px;
 		word-break: break-all;
 		color: var(--color-muted-foreground);
+	}
+
+	.edit-modal-label-gap {
+		margin-top: 12px;
+	}
+
+	.edit-modal-optional {
+		font-weight: 400;
+		color: var(--color-muted-foreground);
+		opacity: 0.7;
+		text-transform: none;
+		letter-spacing: normal;
+	}
+
+	.edit-modal-input {
+		width: 100%;
+		font-family: "SF Mono", "Fira Code", monospace;
+		font-size: 12px;
+		padding: 6px 8px;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm, 4px);
+		background: var(--color-card);
+		color: var(--color-foreground);
+		box-sizing: border-box;
+	}
+
+	.edit-modal-input:focus {
+		outline: none;
+		border-color: #3b82f6;
+		box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
 	}
 
 	.edit-modal-textarea {

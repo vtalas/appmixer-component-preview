@@ -18,6 +18,14 @@ export async function POST({ request }) {
         const raw = fs.readFileSync(fullPath, 'utf-8');
         const content = JSON.parse(raw);
 
+        // Ensure E2E test flow tag is present so the flow appears in the E2E flows list
+        if (!content.customFields) {
+            content.customFields = {};
+        }
+        if (!content.customFields.category) {
+            content.customFields.category = 'E2E_test_flow';
+        }
+
         if (flowId) {
             await updateFlow(flowId, content);
             return json({ success: true, flowId, action: 'updated' });

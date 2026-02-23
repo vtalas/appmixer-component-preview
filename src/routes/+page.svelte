@@ -1,9 +1,7 @@
 <script>
 	import { Input } from '$lib/components/ui/input';
-	import { ScrollArea } from '$lib/components/ui/scroll-area';
-	import * as Collapsible from '$lib/components/ui/collapsible';
 	import { Badge } from '$lib/components/ui/badge';
-	import { ChevronRight, Search, Package, Folder, Box, X, Save, AlertCircle, FolderSync, Circle, RotateCw, Loader2, MessageSquare, ShieldAlert, ShieldCheck, Copy, Check, Settings } from 'lucide-svelte';
+	import { Search, Package, X, Save, AlertCircle, FolderSync, RotateCw, Loader2, MessageSquare, ShieldAlert, ShieldCheck, Copy, Check, Settings, Columns2, ChevronRight } from 'lucide-svelte';
 	import { Button } from '$lib/components/ui/button';
 	import ComponentPreview from '$lib/components/ComponentPreview.svelte';
 	import AiChatPanel from '$lib/components/AiChatPanel.svelte';
@@ -14,14 +12,14 @@
 	import { onMount, untrack } from 'svelte';
 	import { fileSync } from '$lib/stores/fileSync.svelte';
 
-	let searchQuery = $state('');
+	let connectorSearch = $state('');
 	let selectedComponent = $state(null);
 	let selectedDashboardConnector = $state(null);
 	let initialE2ETab = $state(null);
 	let showSettings = $state(false);
-	let expandedConnectors = $state(new Set());
-	let expandedModules = $state(new Set());
 	let showAiPanel = $state(false);
+	let secondComponent = $state(null);
+	let showComponentPicker = $state(false);
 	let testPlanData = $state(null);
 	let testPlanLoading = $state(false);
 	let testPlanConnector = $state(null);
@@ -79,13 +77,6 @@
 		return currentTree.connectors.find(c => c.name === connectorName) || null;
 	});
 
-	// Helper to expand the tree to show a component
-	function expandTreeForComponent(component) {
-		const [connectorName, moduleName] = component.path.split('/');
-		expandedConnectors = new Set([...expandedConnectors, connectorName]);
-		expandedModules = new Set([...expandedModules, `${connectorName}/${moduleName}`]);
-	}
-
 	// Parse /connector/<connectorName>[/e2e/local|remote][/<componentName>] from pathname
 	function parseRoute(pathname) {
 		const e2eMatch = pathname.match(/^\/connector\/([^/]+)\/e2e\/(local|remote)\/?$/);
@@ -114,7 +105,6 @@
 					selectedDashboardConnector = connector;
 					selectedComponent = null;
 					initialE2ETab = route.e2eTab || null;
-					expandedConnectors = new Set([...expandedConnectors, connector.name]);
 				}
 			} else {
 				const component = findComponentByRoute(route.connector, route.component);
@@ -122,7 +112,6 @@
 					selectedComponent = component;
 					selectedDashboardConnector = null;
 					initialE2ETab = null;
-					expandTreeForComponent(component);
 				}
 			}
 		}
@@ -163,7 +152,6 @@
 						selectedDashboardConnector = connector;
 						selectedComponent = null;
 						initialE2ETab = route.e2eTab || null;
-						expandedConnectors = new Set([...expandedConnectors, connector.name]);
 						return;
 					}
 				} else {
@@ -172,7 +160,6 @@
 						selectedComponent = component;
 						selectedDashboardConnector = null;
 						initialE2ETab = null;
-						expandTreeForComponent(component);
 						return;
 					}
 				}
@@ -194,69 +181,15 @@
 		}
 	});
 
-	let filteredTree = $derived.by(() => {
-		if (!searchQuery.trim()) {
-			return currentTree;
-		}
-
-		const query = searchQuery.toLowerCase();
-		const filtered = { connectors: [] };
-
-		for (const connector of currentTree.connectors) {
-			const filteredModules = [];
-
-			for (const module of connector.modules) {
-				const filteredComponents = module.components.filter((comp) => {
-					const searchText = [
-						comp.name,
-						comp.label || '',
-						comp.componentJson.description || '',
-						connector.name,
-						module.name
-					]
-						.join(' ')
-						.toLowerCase();
-					return searchText.includes(query);
-				});
-
-				if (filteredComponents.length > 0) {
-					filteredModules.push({
-						...module,
-						components: filteredComponents
-					});
-				}
-			}
-
-			if (filteredModules.length > 0) {
-				filtered.connectors.push({
-					...connector,
-					modules: filteredModules
-				});
-			}
-		}
-
-		return filtered;
+	// Filtered connectors for the grid view
+	let filteredConnectors = $derived.by(() => {
+		if (!connectorSearch.trim()) return currentTree.connectors;
+		const query = connectorSearch.toLowerCase();
+		return currentTree.connectors.filter(c => {
+			const searchText = [c.name, c.label || ''].join(' ').toLowerCase();
+			return searchText.includes(query);
+		});
 	});
-
-	function toggleConnector(name) {
-		const newSet = new Set(expandedConnectors);
-		if (newSet.has(name)) {
-			newSet.delete(name);
-		} else {
-			newSet.add(name);
-		}
-		expandedConnectors = newSet;
-	}
-
-	function toggleModule(key) {
-		const newSet = new Set(expandedModules);
-		if (newSet.has(key)) {
-			newSet.delete(key);
-		} else {
-			newSet.add(key);
-		}
-		expandedModules = newSet;
-	}
 
 	async function selectComponent(component) {
 		// If connected, load fresh data from disk
@@ -269,7 +202,18 @@
 	}
 
 	function closeEditor() {
+		const connector = selectedConnector;
 		selectedComponent = null;
+		secondComponent = null;
+		showComponentPicker = false;
+		if (connector) {
+			const connectorObj = currentTree.connectors.find(c => c.name === connector.name);
+			if (connectorObj) {
+				selectedDashboardConnector = connectorObj;
+				updateUrl(null, connectorObj);
+				return;
+			}
+		}
 		selectedDashboardConnector = null;
 		updateUrl(null);
 	}
@@ -277,26 +221,20 @@
 	function selectConnectorDashboard(connector) {
 		selectedDashboardConnector = connector;
 		selectedComponent = null;
-		// Also expand the connector in the sidebar
-		expandedConnectors = new Set([...expandedConnectors, connector.name]);
+		secondComponent = null;
+		showComponentPicker = false;
 		updateUrl(null, connector);
 	}
 
-	// Expand all when searching
-	$effect(() => {
-		if (searchQuery.trim()) {
-			const connectorNames = new Set(filteredTree.connectors.map((c) => c.name));
-			expandedConnectors = connectorNames;
+	// Side-by-side functions
+	function openSideBySide(component) {
+		secondComponent = component;
+		showComponentPicker = false;
+	}
 
-			const moduleKeys = new Set();
-			for (const connector of filteredTree.connectors) {
-				for (const module of connector.modules) {
-					moduleKeys.add(`${connector.name}/${module.name}`);
-				}
-			}
-			expandedModules = moduleKeys;
-		}
-	});
+	function closeSideBySide() {
+		secondComponent = null;
+	}
 
 	// Keyboard shortcuts
 	function handleKeydown(event) {
@@ -968,125 +906,53 @@
 		</div>
 	{/if}
 
-	<!-- Sidebar -->
-	<div class="sidebar">
-		<div class="sidebar-header">
-			<h1 class="sidebar-title">Components</h1>
-			<div class="search-box">
-				<Search class="search-icon" />
-				<Input
-					placeholder="Search..."
-					class="search-input"
-					bind:value={searchQuery}
-				/>
-			</div>
-		</div>
-
-		<ScrollArea class="sidebar-content">
-			{#if fileSync.state.isLoading}
-				<div class="sidebar-loading">
-					<Loader2 class="loading-spinner" />
-					<span>Loading connectors...</span>
-				</div>
-			{:else if !fileSync.isConnected}
-				<div class="sidebar-empty">
-					<FolderSync class="empty-folder-icon" />
-					<p>No folder connected</p>
-					<p class="sidebar-empty-hint">Click "Open Connectors" to select the appmixer connectors folder</p>
-				</div>
-			{:else}
-			<div class="tree-container">
-				{#each filteredTree.connectors as connector}
-					<Collapsible.Root
-						open={expandedConnectors.has(connector.name)}
-						onOpenChange={() => toggleConnector(connector.name)}
-					>
-						<div class="tree-item connector-item {selectedDashboardConnector?.name === connector.name ? 'selected' : ''}">
-							<Collapsible.Trigger class="connector-chevron">
-								<ChevronRight
-									class="tree-chevron {expandedConnectors.has(connector.name) ? 'expanded' : ''}"
-								/>
-							</Collapsible.Trigger>
-							<button class="connector-name-btn" onclick={() => selectConnectorDashboard(connector)}>
-								{#if connector.icon}
-									<img
-										src={connector.icon}
-										alt=""
-										class="connector-icon"
-									/>
-								{:else}
-									<Package class="tree-icon" />
-								{/if}
-								<span class="tree-label">{connector.label || connector.name}</span>
-								<Badge variant="secondary" class="tree-badge">
-									{connector.modules.reduce((acc, m) => acc + m.components.length, 0)}
-								</Badge>
-							</button>
-						</div>
-						<Collapsible.Content>
-							<div class="tree-children">
-								{#each connector.modules as module}
-									{@const moduleKey = `${connector.name}/${module.name}`}
-									<Collapsible.Root
-										open={expandedModules.has(moduleKey)}
-										onOpenChange={() => toggleModule(moduleKey)}
-									>
-										<Collapsible.Trigger class="tree-item module-item">
-											<ChevronRight
-												class="tree-chevron {expandedModules.has(moduleKey) ? 'expanded' : ''}"
-											/>
-											<Folder class="tree-icon" />
-											<span class="tree-label">{module.name}</span>
-											<Badge variant="outline" class="tree-badge">
-												{module.components.length}
-											</Badge>
-										</Collapsible.Trigger>
-										<Collapsible.Content>
-											<div class="tree-children">
-												{#each module.components as component}
-													<button
-														class="tree-item component-item {selectedComponent?.path === component.path ? 'selected' : ''} {fileSync.isComponentModified(component.path) ? 'modified' : ''}"
-														onclick={() => selectComponent(component)}
-													>
-														{#if fileSync.isComponentModified(component.path)}
-															<Circle class="modified-indicator" />
-														{/if}
-														{#if component.componentJson.icon}
-															<img
-																src={component.componentJson.icon}
-																alt=""
-																class="component-icon"
-															/>
-														{:else if connector.icon}
-															<img
-																src={connector.icon}
-																alt=""
-																class="component-icon"
-															/>
-														{:else}
-															<Box class="tree-icon" />
-														{/if}
-														<span class="tree-label">{component.label || component.name}</span>
-														{#if component.componentJson.trigger}
-															<Badge variant="secondary" class="tree-badge small">T</Badge>
-														{/if}
-													</button>
-												{/each}
-											</div>
-										</Collapsible.Content>
-									</Collapsible.Root>
-								{/each}
-							</div>
-						</Collapsible.Content>
-					</Collapsible.Root>
-				{/each}
-			</div>
-			{/if}
-		</ScrollArea>
-	</div>
-
 	<!-- Main Content -->
 	<div class="main-content">
+		<!-- Breadcrumb Navigation -->
+		{#if !showSettings && (selectedDashboardConnector || selectedComponent)}
+			<nav class="breadcrumb-bar">
+				<button class="breadcrumb-item" onclick={() => { selectedComponent = null; secondComponent = null; showComponentPicker = false; selectedDashboardConnector = null; updateUrl(null); }}>
+					Connectors
+				</button>
+				{#if selectedComponent && selectedConnector}
+					<ChevronRight class="breadcrumb-sep" />
+					<button class="breadcrumb-item" onclick={closeEditor}>
+						{#if selectedConnector.icon}
+							<img src={selectedConnector.icon} alt="" class="breadcrumb-icon" />
+						{/if}
+						{selectedConnector.label || selectedConnector.name}
+					</button>
+					<ChevronRight class="breadcrumb-sep" />
+					<div class="breadcrumb-select-wrapper">
+						<select
+							class="breadcrumb-select"
+							value={selectedComponent.path}
+							onchange={(e) => { const c = findComponentByPath(e.target.value); if (c) selectComponent(c); }}
+						>
+							{#each selectedConnector.modules as module}
+								<optgroup label={module.name}>
+									{#each module.components as c}
+										<option value={c.path}>{c.label || c.name}</option>
+									{/each}
+								</optgroup>
+							{/each}
+						</select>
+						{#if fileSync.isComponentModified(selectedComponent.path)}
+							<span class="modified-dot"></span>
+						{/if}
+					</div>
+				{:else if selectedDashboardConnector}
+					<ChevronRight class="breadcrumb-sep" />
+					<span class="breadcrumb-item current">
+						{#if selectedDashboardConnector.icon}
+							<img src={selectedDashboardConnector.icon} alt="" class="breadcrumb-icon" />
+						{/if}
+						{selectedDashboardConnector.label || selectedDashboardConnector.name}
+					</span>
+				{/if}
+			</nav>
+		{/if}
+
 		{#if showSettings}
 			<SettingsPanel onBack={() => showSettings = false} />
 		{:else if selectedDashboardConnector}
@@ -1106,8 +972,7 @@
 				planningError={planningError}
 				onClearPlanning={() => { planningOutput = ''; planningError = null; }}
 				onRefreshTree={() => fileSync.scanConnectorsDirectory()}
-				onOpenSettings={() => { showSettings = true; selectedComponent = null; selectedDashboardConnector = null; updateUrl(null); }}
-				{initialE2ETab}
+				onOpenSettings={() => { showSettings = true; selectedComponent = null; selectedDashboardConnector = null; updateUrl(null); }}				{initialE2ETab}
 				onE2ETabChange={(tab) => {
 					initialE2ETab = tab;
 					if (tab && selectedDashboardConnector) {
@@ -1122,34 +987,25 @@
 		{:else if selectedComponent}
 			{@const comp = selectedComponent.componentJson}
 			<div class="editor-panel">
-				<!-- Editor Header -->
+				<!-- Editor Header (actions only) -->
 				<div class="editor-header">
-					<div class="editor-title-section">
-						{#if comp.icon}
-							<img
-								src={comp.icon}
-								alt=""
-								class="editor-icon"
-							/>
-						{:else if selectedConnector?.icon}
-							<img
-								src={selectedConnector.icon}
-								alt=""
-								class="editor-icon"
-							/>
-						{:else}
-							<div class="editor-icon-placeholder">
-								<Package class="editor-icon-fallback" />
-							</div>
+					<div class="editor-header-left">
+						{#if comp.description}
+							<span class="editor-description-inline">{comp.description}</span>
 						{/if}
-						<div class="editor-title-text">
-							<h2 class="editor-title">
-								{comp.label || selectedComponent.name}
-								{#if fileSync.isComponentModified(selectedComponent.path)}
-									<span class="modified-dot"></span>
-								{/if}
-							</h2>
-							<p class="editor-subtitle">{comp.name}</p>
+						<div class="editor-badges-inline">
+							{#if comp.trigger}
+								<Badge>Trigger</Badge>
+							{/if}
+							{#if comp.webhook}
+								<Badge variant="secondary">Webhook</Badge>
+							{/if}
+							{#if comp.tick}
+								<Badge variant="secondary">Polling</Badge>
+							{/if}
+							{#if comp.auth}
+								<Badge variant="outline">{comp.auth.service}</Badge>
+							{/if}
 						</div>
 					</div>
 					<div class="editor-header-actions">
@@ -1171,9 +1027,17 @@
 								disabled={fileSync.state.isSaving}
 							>
 								<Save class="h-4 w-4 mr-2" />
-								Save Component
+								Save
 							</Button>
 						{/if}
+						<Button
+							variant={secondComponent ? 'secondary' : 'ghost'}
+							size="sm"
+							onclick={() => { showComponentPicker = !showComponentPicker; if (!showComponentPicker) secondComponent = null; }}
+							title="Side by Side"
+						>
+							<Columns2 class="h-4 w-4" />
+						</Button>
 						<Button
 							variant={showAiPanel ? 'secondary' : 'ghost'}
 							size="sm"
@@ -1182,29 +1046,37 @@
 						>
 							<MessageSquare class="h-4 w-4" />
 						</Button>
-						<Button variant="ghost" size="sm" onclick={closeEditor} class="close-button">
-							<X class="h-4 w-4" />
-						</Button>
 					</div>
 				</div>
 
-				<!-- Component Info -->
-				{#if comp.description}
-					<div class="editor-description">
-						{comp.description}
+				<!-- Component Picker for Side-by-Side -->
+				{#if showComponentPicker && !secondComponent && selectedConnector}
+					<div class="component-picker">
+						<span class="picker-label">Open side by side:</span>
+						<select
+							class="breadcrumb-select"
+							value=""
+							onchange={(e) => { const c = findComponentByPath(e.target.value); if (c) openSideBySide(c); }}
+						>
+							<option value="" disabled>Select a component...</option>
+							{#each selectedConnector.modules as module}
+								<optgroup label={module.name}>
+									{#each module.components as c}
+										{#if c.path !== selectedComponent.path}
+											<option value={c.path}>{c.label || c.name}</option>
+										{/if}
+									{/each}
+								</optgroup>
+							{/each}
+						</select>
+						<Button variant="ghost" size="sm" onclick={() => showComponentPicker = false}>
+							<X class="h-3.5 w-3.5" />
+						</Button>
 					</div>
 				{/if}
 
+				<!-- Auth status -->
 				<div class="editor-badges">
-					{#if comp.trigger}
-						<Badge>Trigger</Badge>
-					{/if}
-					{#if comp.webhook}
-						<Badge variant="secondary">Webhook</Badge>
-					{/if}
-					{#if comp.tick}
-						<Badge variant="secondary">Polling</Badge>
-					{/if}
 					{#if comp.auth}
 						<Badge variant="outline">{comp.auth.service}</Badge>
 						{#if authStatus === 'checking'}
@@ -1370,9 +1242,9 @@
 					</div>
 				{/if}
 
-				<!-- Component Properties + AI Side Panel -->
+				<!-- Component Properties + Side-by-Side + AI Panel -->
 				<div class="editor-body-wrapper">
-					<div class="editor-body">
+					<div class="editor-pane">
 						<div class="properties-scroll">
 							<ComponentPreview
 								componentJson={comp}
@@ -1390,6 +1262,23 @@
 							/>
 						</div>
 					</div>
+					{#if secondComponent}
+						<div class="editor-pane secondary-pane">
+							<div class="secondary-pane-header">
+								<span class="secondary-pane-title">{secondComponent.componentJson.label || secondComponent.name}</span>
+								<button class="secondary-pane-close" onclick={closeSideBySide}>
+									<X class="h-3.5 w-3.5" />
+								</button>
+							</div>
+							<div class="properties-scroll">
+								<ComponentPreview
+									componentJson={secondComponent.componentJson}
+									componentPath={secondComponent.path}
+									connectorsDir={fileSync.directoryPath || ''}
+								/>
+							</div>
+						</div>
+					{/if}
 					{#if showAiPanel}
 						<div class="ai-panel">
 							<AiChatPanel
@@ -1401,10 +1290,51 @@
 				</div>
 			</div>
 		{:else}
-			<div class="empty-state">
-				<Package class="empty-icon" />
-				<p class="empty-title">Select a component</p>
-				<p class="empty-subtitle">Browse connectors in the sidebar and click on a component to preview its inputs</p>
+			<!-- Connectors Grid View -->
+			<div class="connectors-view">
+				{#if fileSync.state.isLoading}
+					<div class="connectors-loading">
+						<Loader2 class="loading-spinner" />
+						<span>Loading connectors...</span>
+					</div>
+				{:else if !fileSync.isConnected}
+					<div class="empty-state">
+						<FolderSync class="empty-icon" />
+						<p class="empty-title">No folder connected</p>
+						<p class="empty-subtitle">Click "Open Connectors" to select the appmixer connectors folder</p>
+					</div>
+				{:else}
+					<div class="connectors-header">
+						<h1 class="connectors-title">Connectors</h1>
+						<div class="connectors-search">
+							<Search class="search-icon" />
+							<Input
+								placeholder="Search connectors..."
+								class="search-input"
+								bind:value={connectorSearch}
+							/>
+						</div>
+					</div>
+					<div class="connectors-grid">
+						{#each filteredConnectors as connector}
+							{@const componentCount = connector.modules.reduce((acc, m) => acc + m.components.length, 0)}
+							<button class="connector-card" onclick={() => selectConnectorDashboard(connector)}>
+								{#if connector.icon}
+									<img src={connector.icon} alt="" class="connector-card-icon" />
+								{:else}
+									<div class="connector-card-icon-placeholder">
+										<Package class="connector-card-icon-fallback" />
+									</div>
+								{/if}
+								<span class="connector-card-name">{connector.label || connector.name}</span>
+								<Badge variant="secondary">{componentCount} components</Badge>
+							</button>
+						{/each}
+						{#if filteredConnectors.length === 0}
+							<div class="connectors-empty">No connectors found</div>
+						{/if}
+					</div>
+				{/if}
 			</div>
 		{/if}
 	</div>
@@ -1413,7 +1343,7 @@
 <style>
 	.app-layout {
 		display: flex;
-		flex-wrap: wrap;
+		flex-direction: column;
 		height: 100vh;
 		background: var(--color-background);
 	}
@@ -1428,6 +1358,7 @@
 		background: var(--color-card);
 		border-bottom: 1px solid var(--color-border);
 		gap: 16px;
+		flex-shrink: 0;
 	}
 
 	.file-toolbar-left {
@@ -1470,29 +1401,50 @@
 		font-size: 12px;
 	}
 
-	/* Sidebar */
-	.sidebar {
-		width: 320px;
-		height: calc(100vh - 49px); /* Account for toolbar height */
-		border-right: 1px solid var(--color-border);
+	/* Main Content */
+	.main-content {
+		flex: 1;
 		display: flex;
 		flex-direction: column;
-		background: var(--color-card);
+		overflow: hidden;
 	}
 
-	.sidebar-header {
-		padding: 16px;
-		border-bottom: 1px solid var(--color-border);
+	/* Connectors Grid View */
+	.connectors-view {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		overflow: auto;
 	}
 
-	.sidebar-title {
-		font-size: 16px;
+	.connectors-loading {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		color: var(--color-muted-foreground);
+		gap: 12px;
+	}
+
+	.connectors-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 20px 24px 0;
+		gap: 16px;
+	}
+
+	.connectors-title {
+		font-size: 20px;
 		font-weight: 600;
-		margin-bottom: 12px;
+		flex-shrink: 0;
 	}
 
-	.search-box {
+	.connectors-search {
 		position: relative;
+		max-width: 320px;
+		width: 100%;
 	}
 
 	:global(.search-icon) {
@@ -1503,6 +1455,7 @@
 		width: 16px;
 		height: 16px;
 		color: var(--color-muted-foreground);
+		z-index: 1;
 	}
 
 	:global(.search-input) {
@@ -1511,140 +1464,165 @@
 		font-size: 13px;
 	}
 
-	:global(.sidebar-content) {
-		flex: 1;
+	.connectors-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+		gap: 12px;
+		padding: 20px 24px;
 	}
 
-	.tree-container {
-		padding: 8px;
-	}
-
-	:global(.tree-item) {
+	.connector-card {
 		display: flex;
+		flex-direction: column;
 		align-items: center;
-		gap: 6px;
-		width: 100%;
-		padding: 6px 8px;
+		gap: 8px;
+		padding: 20px 12px;
+		border: 1px solid var(--color-border);
 		border-radius: var(--radius-md);
-		font-size: 13px;
-		text-align: left;
+		background: var(--color-card);
 		cursor: pointer;
-		border: none;
-		background: transparent;
+		transition: all 0.15s ease;
+		text-align: center;
 	}
 
-	:global(.tree-item:hover) {
+	.connector-card:hover {
+		border-color: var(--color-ring);
 		background: var(--color-muted);
 	}
 
-	:global(.tree-item.selected) {
-		background: var(--color-accent);
+	.connector-card-icon {
+		width: 40px;
+		height: 40px;
+		border-radius: 6px;
 	}
 
-	:global(.tree-chevron) {
-		width: 14px;
-		height: 14px;
-		flex-shrink: 0;
-		transition: transform 0.15s ease;
-	}
-
-	:global(.tree-chevron.expanded) {
-		transform: rotate(90deg);
-	}
-
-	:global(.tree-icon) {
-		width: 16px;
-		height: 16px;
-		flex-shrink: 0;
-		color: var(--color-muted-foreground);
-	}
-
-	.component-icon {
-		width: 16px;
-		height: 16px;
-		flex-shrink: 0;
-	}
-
-	.connector-icon {
-		width: 16px;
-		height: 16px;
-		flex-shrink: 0;
-		border-radius: 2px;
-	}
-
-	.tree-label {
-		flex: 1;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	:global(.tree-badge) {
-		font-size: 10px;
-		padding: 0 6px;
-		height: 18px;
-	}
-
-	:global(.tree-badge.small) {
-		padding: 0 4px;
-		height: 16px;
-	}
-
-	:global(.modified-indicator) {
-		width: 8px;
-		height: 8px;
-		fill: hsl(var(--color-primary));
-		flex-shrink: 0;
-	}
-
-	:global(.tree-item.modified) {
-		font-weight: 500;
-	}
-
-	.tree-children {
-		margin-left: 20px;
-	}
-
-	/* Connector sidebar item: split chevron and name */
-	:global(.connector-chevron) {
+	.connector-card-icon-placeholder {
+		width: 40px;
+		height: 40px;
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		flex-shrink: 0;
-		border: none;
-		background: transparent;
-		cursor: pointer;
-		padding: 2px;
-		border-radius: var(--radius-sm);
+		background: var(--color-muted);
+		border-radius: 6px;
 	}
 
-	:global(.connector-chevron:hover) {
-		background: var(--color-accent);
+	:global(.connector-card-icon-fallback) {
+		width: 24px;
+		height: 24px;
+		color: var(--color-muted-foreground);
 	}
 
-	.connector-name-btn {
-		flex: 1;
+	.connector-card-name {
+		font-size: 13px;
+		font-weight: 500;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		max-width: 100%;
+	}
+
+	.connectors-empty {
+		grid-column: 1 / -1;
+		text-align: center;
+		padding: 40px;
+		color: var(--color-muted-foreground);
+		font-size: 14px;
+	}
+
+	/* Breadcrumb Navigation */
+	.breadcrumb-bar {
 		display: flex;
 		align-items: center;
+		gap: 4px;
+		padding: 8px 20px;
+		border-bottom: 1px solid var(--color-border);
+		background: var(--color-card);
+		flex-shrink: 0;
+		min-height: 40px;
+	}
+
+	.breadcrumb-item {
+		display: inline-flex;
+		align-items: center;
 		gap: 6px;
+		font-size: 13px;
+		font-weight: 500;
+		color: var(--color-muted-foreground);
 		border: none;
+		background: none;
+		cursor: pointer;
+		padding: 4px 8px;
+		border-radius: var(--radius-sm);
+		white-space: nowrap;
+	}
+
+	.breadcrumb-item:hover {
+		color: var(--color-foreground);
+		background: var(--color-muted);
+	}
+
+	.breadcrumb-item.current {
+		color: var(--color-foreground);
+		cursor: default;
+	}
+
+	.breadcrumb-item.current:hover {
+		background: none;
+	}
+
+	:global(.breadcrumb-sep) {
+		width: 14px;
+		height: 14px;
+		color: var(--color-muted-foreground);
+		opacity: 0.5;
+		flex-shrink: 0;
+	}
+
+	.breadcrumb-icon {
+		width: 18px;
+		height: 18px;
+		border-radius: 3px;
+		flex-shrink: 0;
+	}
+
+	.breadcrumb-select-wrapper {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+	}
+
+	.breadcrumb-select {
+		padding: 4px 8px;
+		font-size: 13px;
+		font-weight: 600;
+		color: var(--color-foreground);
+		border: 1px solid transparent;
+		border-radius: var(--radius-sm);
 		background: transparent;
 		cursor: pointer;
-		font-size: 13px;
-		text-align: left;
-		padding: 0;
-		min-width: 0;
-		color: inherit;
+		appearance: auto;
 	}
 
-	/* Main Content */
-	.main-content {
-		flex: 1;
-		display: flex;
-		flex-direction: column;
-		overflow: hidden;
+	.breadcrumb-select:hover {
+		background: var(--color-muted);
+		border-color: var(--color-border);
 	}
 
+	.breadcrumb-select:focus {
+		outline: none;
+		border-color: var(--color-ring);
+		background: var(--color-background);
+	}
+
+	.modified-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: hsl(var(--color-primary));
+		flex-shrink: 0;
+	}
+
+	/* Editor */
 	.editor-panel {
 		flex: 1;
 		display: flex;
@@ -1656,90 +1634,68 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		padding: 16px 20px;
+		gap: 12px;
+		padding: 8px 20px;
 		border-bottom: 1px solid var(--color-border);
 		background: var(--color-card);
 	}
 
-	.editor-title-section {
+	.editor-header-left {
 		display: flex;
 		align-items: center;
-		gap: 12px;
+		gap: 10px;
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
 	}
 
-	.editor-icon {
-		width: 40px;
-		height: 40px;
-		flex-shrink: 0;
-		border-radius: 4px;
-	}
-
-	.editor-icon-placeholder {
-		width: 40px;
-		height: 40px;
-		flex-shrink: 0;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		background: var(--color-muted);
-		border-radius: 4px;
-	}
-
-	:global(.editor-icon-fallback) {
-		width: 24px;
-		height: 24px;
+	.editor-description-inline {
+		font-size: 12px;
 		color: var(--color-muted-foreground);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
-	.editor-title-text {
-		display: flex;
-		flex-direction: column;
-	}
-
-	.editor-title {
-		font-size: 18px;
-		font-weight: 600;
-		line-height: 1.2;
+	.editor-badges-inline {
 		display: flex;
 		align-items: center;
-		gap: 8px;
+		gap: 4px;
+		flex-shrink: 0;
 	}
 
-	.modified-dot {
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		background: hsl(var(--color-primary));
+	.editor-badges-inline:empty {
+		display: none;
 	}
 
 	.editor-header-actions {
 		display: flex;
 		align-items: center;
-		gap: 8px;
+		gap: 6px;
+		flex-shrink: 0;
 	}
 
-	.editor-subtitle {
-		font-size: 12px;
-		color: var(--color-muted-foreground);
-		font-family: monospace;
-	}
-
-	:global(.close-button) {
-		color: var(--color-muted-foreground);
-	}
-
-	.editor-description {
-		padding: 12px 20px;
-		font-size: 13px;
-		color: var(--color-muted-foreground);
+	/* Component Picker for Side-by-Side */
+	.component-picker {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		padding: 8px 20px;
 		border-bottom: 1px solid var(--color-border);
 		background: var(--color-muted);
+	}
+
+	.picker-label {
+		font-size: 13px;
+		font-weight: 500;
+		color: var(--color-muted-foreground);
+		flex-shrink: 0;
 	}
 
 	.editor-badges {
 		display: flex;
 		gap: 6px;
-		padding: 12px 20px;
+		padding: 8px 20px;
 		border-bottom: 1px solid var(--color-border);
 	}
 
@@ -1754,12 +1710,52 @@
 		min-height: 0;
 	}
 
-	.editor-body {
+	.editor-pane {
 		flex: 1;
 		display: flex;
 		flex-direction: column;
 		overflow: hidden;
 		min-height: 0;
+	}
+
+	.secondary-pane {
+		border-left: 1px solid var(--color-border);
+	}
+
+	.secondary-pane-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 8px 16px;
+		border-bottom: 1px solid var(--color-border);
+		background: var(--color-muted);
+	}
+
+	.secondary-pane-title {
+		font-size: 13px;
+		font-weight: 500;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.secondary-pane-close {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 24px;
+		height: 24px;
+		border: none;
+		background: transparent;
+		cursor: pointer;
+		border-radius: var(--radius-sm);
+		color: var(--color-muted-foreground);
+		flex-shrink: 0;
+	}
+
+	.secondary-pane-close:hover {
+		background: var(--color-accent);
+		color: var(--color-foreground);
 	}
 
 	.ai-panel {
@@ -1769,6 +1765,14 @@
 		flex-direction: column;
 		overflow: hidden;
 		background: var(--color-card);
+		flex-shrink: 0;
+	}
+
+	.properties-scroll {
+		flex: 1;
+		overflow: auto;
+		padding: 20px;
+		min-height: 0;
 	}
 
 	/* Empty State */
@@ -1801,17 +1805,6 @@
 		max-width: 300px;
 	}
 
-	/* Sidebar Loading State */
-	.sidebar-loading {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		justify-content: center;
-		padding: 40px 20px;
-		color: var(--color-muted-foreground);
-		gap: 12px;
-	}
-
 	:global(.loading-spinner) {
 		width: 24px;
 		height: 24px;
@@ -1825,43 +1818,6 @@
 		to {
 			transform: rotate(360deg);
 		}
-	}
-
-	/* Sidebar Empty State */
-	.sidebar-empty {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		justify-content: center;
-		padding: 40px 20px;
-		color: var(--color-muted-foreground);
-		text-align: center;
-	}
-
-	:global(.empty-folder-icon) {
-		width: 48px;
-		height: 48px;
-		opacity: 0.4;
-		margin-bottom: 12px;
-	}
-
-	.sidebar-empty p {
-		margin: 0;
-		font-size: 14px;
-	}
-
-	.sidebar-empty-hint {
-		font-size: 12px !important;
-		margin-top: 8px !important;
-		opacity: 0.7;
-		max-width: 200px;
-	}
-
-	.properties-scroll {
-		flex: 1;
-		overflow: auto;
-		padding: 20px;
-		min-height: 0;
 	}
 
 	/* Auth Status */

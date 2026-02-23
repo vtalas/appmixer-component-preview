@@ -94,8 +94,9 @@
 
 	// ── JSON helpers ────────────────────────────────────────────────────
 
-	function extractInputJsonRange(cmdStr) {
-		const flagMatch = cmdStr.match(/-i\s+'?/);
+	function extractJsonRange(cmdStr, flag) {
+		const re = new RegExp(`${flag}\\s+'?`);
+		const flagMatch = cmdStr.match(re);
 		if (!flagMatch) return null;
 		let start = flagMatch.index + flagMatch[0].length;
 		if (cmdStr[start] !== '{') return null;
@@ -115,6 +116,10 @@
 			}
 		}
 		return null;
+	}
+
+	function extractInputJsonRange(cmdStr) {
+		return extractJsonRange(cmdStr, '-i');
 	}
 
 	// ── Run test ────────────────────────────────────────────────────────
@@ -291,14 +296,23 @@
 		});
 	}
 
-	// ── Edit command (-i JSON) ──────────────────────────────────────────
+	// ── Edit command (-i, -p, -t) ───────────────────────────────────────
 
-	function editCommand(cmdIndex, newInputJson) {
-		let compacted;
+	function editCommand(cmdIndex, newInputJson, newPropsJson, newTickValue) {
+		let compactedI;
 		try {
-			compacted = JSON.stringify(JSON.parse(newInputJson));
+			compactedI = JSON.stringify(JSON.parse(newInputJson));
 		} catch {
 			return;
+		}
+
+		let compactedP = null;
+		if (newPropsJson) {
+			try {
+				compactedP = JSON.stringify(JSON.parse(newPropsJson));
+			} catch {
+				return;
+			}
 		}
 
 		updateTestPlanItem(item => {
@@ -306,21 +320,46 @@
 			const cmd = commands[cmdIndex];
 			if (!cmd) return item;
 
-			const replaceJson = (str) => {
+			const replaceJsonFlag = (str, flag, value) => {
 				if (!str) return str;
-				const range = extractInputJsonRange(str);
+				const range = extractJsonRange(str, flag);
 				if (range) {
 					let end = range.end;
 					if (str[end] === "'") end++;
-					return str.slice(0, range.flagStart) + `-i ${compacted}` + str.slice(end);
+					if (value) {
+						return str.slice(0, range.flagStart) + `${flag} ${value}` + str.slice(end);
+					}
+					// Remove the flag entirely
+					return (str.slice(0, range.flagStart) + str.slice(end)).replace(/\s+/g, ' ').trim();
 				}
-				return `${str} -i ${compacted}`;
+				if (value) return `${str} ${flag} ${value}`;
+				return str;
+			};
+
+			const replaceSimpleFlag = (str, flag, value) => {
+				if (!str) return str;
+				const re = new RegExp(`${flag}\\s+\\S+`);
+				if (re.test(str)) {
+					if (value) {
+						return str.replace(re, `${flag} ${value}`);
+					}
+					return str.replace(re, '').replace(/\s+/g, ' ').trim();
+				}
+				if (value) return `${str} ${flag} ${value}`;
+				return str;
+			};
+
+			const applyEdits = (str) => {
+				str = replaceJsonFlag(str, '-i', compactedI);
+				str = replaceJsonFlag(str, '-p', compactedP);
+				str = replaceSimpleFlag(str, '-t', newTickValue);
+				return str;
 			};
 
 			commands[cmdIndex] = {
 				...cmd,
-				cmd: replaceJson(cmd.cmd),
-				command: replaceJson(cmd.command)
+				cmd: applyEdits(cmd.cmd),
+				command: applyEdits(cmd.command)
 			};
 			return { ...item, result: { commands } };
 		});

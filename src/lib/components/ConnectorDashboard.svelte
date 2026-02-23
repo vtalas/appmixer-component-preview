@@ -316,8 +316,21 @@ When creating PRs or issues, relate them to the ${connector.name} connector work
 				<p class="dashboard-subtitle">{connector.name}</p>
 			</div>
 		</div>
-		{#if isConnected}
-			<div class="dashboard-header-actions">
+		<div class="dashboard-header-actions">
+			{#if isConnected}
+				<Button
+					variant="outline"
+					size="sm"
+					onclick={() => showAddComponent = !showAddComponent}
+				>
+					{#if showAddComponent}
+						<X class="h-3.5 w-3.5 mr-1" />
+						Cancel
+					{:else}
+						<Plus class="h-3.5 w-3.5 mr-1" />
+						Add Component
+					{/if}
+				</Button>
 				<Button
 					variant={showClaudeChat ? 'secondary' : 'outline'}
 					size="sm"
@@ -326,8 +339,8 @@ When creating PRs or issues, relate them to the ${connector.name} connector work
 					<MessageSquare class="h-4 w-4 mr-2" />
 					Claude Code
 				</Button>
-			</div>
-		{/if}
+			{/if}
+		</div>
 	</div>
 
 	<div class="dashboard-content-wrapper">
@@ -360,36 +373,7 @@ When creating PRs or issues, relate them to the ${connector.name} connector work
 			</div>
 		{:else}
 			<div class="dashboard-body">
-				<!-- Stat Cards -->
 				<div class="stats-grid">
-					<Card.Root class="stat-card">
-						<Card.Content class="stat-card-content">
-							<span class="stat-label">Components</span>
-							<span class="stat-value">{stats.totalComponents}</span>
-						</Card.Content>
-					</Card.Root>
-
-					<Card.Root class="stat-card">
-						<Card.Content class="stat-card-content">
-							<span class="stat-label">Modules</span>
-							<span class="stat-value">{stats.totalModules}</span>
-						</Card.Content>
-					</Card.Root>
-
-					<Card.Root class="stat-card">
-						<Card.Content class="stat-card-content">
-							<span class="stat-label">Triggers</span>
-							<span class="stat-value">{stats.triggers}</span>
-						</Card.Content>
-					</Card.Root>
-
-					<Card.Root class="stat-card">
-						<Card.Content class="stat-card-content">
-							<span class="stat-label">Auth Required</span>
-							<span class="stat-value">{stats.authComponents}</span>
-						</Card.Content>
-					</Card.Root>
-
 					<Card.Root class="stat-card test-plan-card">
 						<Card.Content class="stat-card-content">
 							<span class="stat-label">
@@ -489,21 +473,6 @@ When creating PRs or issues, relate them to the ${connector.name} connector work
 				<div class="components-section">
 					<div class="section-title-row">
 						<h3 class="section-title">Components</h3>
-						{#if isConnected}
-							<Button
-								variant="outline"
-								size="sm"
-								onclick={() => showAddComponent = !showAddComponent}
-							>
-								{#if showAddComponent}
-									<X class="h-3.5 w-3.5 mr-1" />
-									Cancel
-								{:else}
-									<Plus class="h-3.5 w-3.5 mr-1" />
-									Add Component
-								{/if}
-							</Button>
-						{/if}
 					</div>
 
 					{#if showAddComponent}
@@ -787,12 +756,6 @@ When creating PRs or issues, relate them to the ${connector.name} connector work
 	:global(.stat-icon) {
 		width: 14px;
 		height: 14px;
-	}
-
-	.stat-value {
-		font-size: 28px;
-		font-weight: 700;
-		line-height: 1;
 	}
 
 	/* Test Plan Card */

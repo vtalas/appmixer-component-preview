@@ -2,8 +2,6 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
 	import { X, ExternalLink, Github, Trash2, FileDiff, FileText, Play, Square, Settings, Loader2, Download, Upload, HardDrive } from 'lucide-svelte';
-	import { onMount } from 'svelte';
-
 	let { connectorName = '', initialTab = null, onBack, onTabChange, onOpenSettings } = $props();
 
 	// --- Tab state ---
@@ -208,7 +206,8 @@
 				body: JSON.stringify({ flowId, flowName: flow.name, connector: flow.connector || connectorName })
 			});
 			if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || 'Failed to download');
-			await Promise.all([loadLocalFlows(), loadSyncStatuses(), loadLocalSyncStatuses()]);
+			await Promise.all([loadFlows(), loadLocalFlows()]);
+			await Promise.all([loadSyncStatuses(), loadLocalSyncStatuses()]);
 		} catch (e) {
 			alert(`Failed to download flow: ${e.message}`);
 		} finally {
@@ -230,7 +229,9 @@
 				body: JSON.stringify({ localPath: flow.localPath, flowId })
 			});
 			if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || 'Failed to upload');
-			await Promise.all([loadFlows(), loadSyncStatuses(), loadLocalSyncStatuses()]);
+			// Reload flows first, then recompute sync statuses with fresh data
+			await Promise.all([loadFlows(), loadLocalFlows()]);
+			await Promise.all([loadSyncStatuses(), loadLocalSyncStatuses()]);
 		} catch (e) {
 			alert(`Failed to upload flow: ${e.message}`);
 		} finally {
@@ -588,11 +589,22 @@
 		}
 	}
 
-	onMount(async () => {
-		await loadSettings();
-		await Promise.all([loadFlows(), loadLocalFlows()]);
-		loadSyncStatuses();
-		loadLocalSyncStatuses();
+	// Reload all data when connectorName changes (or on first mount)
+	$effect(() => {
+		const _name = connectorName; // track dependency
+		(async () => {
+			// Reset stale data from previous connector
+			flows = [];
+			localFlows = [];
+			syncStatuses = {};
+			localSyncStatuses = {};
+			error = '';
+
+			await loadSettings();
+			await Promise.all([loadFlows(), loadLocalFlows()]);
+			loadSyncStatuses();
+			loadLocalSyncStatuses();
+		})();
 	});
 
 	// Escape key handler
