@@ -922,25 +922,6 @@
 						{/if}
 						{selectedConnector.label || selectedConnector.name}
 					</button>
-					<ChevronRight class="breadcrumb-sep" />
-					<div class="breadcrumb-select-wrapper">
-						<select
-							class="breadcrumb-select"
-							value={selectedComponent.path}
-							onchange={(e) => { const c = findComponentByPath(e.target.value); if (c) selectComponent(c); }}
-						>
-							{#each selectedConnector.modules as module}
-								<optgroup label={module.name}>
-									{#each module.components as c}
-										<option value={c.path}>{c.label || c.name}</option>
-									{/each}
-								</optgroup>
-							{/each}
-						</select>
-						{#if fileSync.isComponentModified(selectedComponent.path)}
-							<span class="modified-dot"></span>
-						{/if}
-					</div>
 				{:else if selectedDashboardConnector}
 					<ChevronRight class="breadcrumb-sep" />
 					<span class="breadcrumb-item current">
@@ -949,6 +930,64 @@
 						{/if}
 						{selectedDashboardConnector.label || selectedDashboardConnector.name}
 					</span>
+				{/if}
+				{#if selectedComponent && selectedConnector}
+					<div class="breadcrumb-actions">
+						{#if selectedComponent.componentJson.auth}
+							{#if authStatus === 'checking'}
+								<Badge variant="secondary" class="auth-checking-badge">
+									<Loader2 class="h-3 w-3 spinning" /> Checking...
+								</Badge>
+							{:else if authStatus === 'valid'}
+								<Badge variant="outline" class="auth-valid-badge">
+									<ShieldCheck class="h-3 w-3" /> Authenticated
+								</Badge>
+							{:else if authStatus === 'failed'}
+								<button class="auth-failed-btn" onclick={() => showAuthForm = !showAuthForm}>
+									<ShieldAlert class="h-3.5 w-3.5" /> Auth Failed
+								</button>
+							{/if}
+						{/if}
+						{#if fileSync.isConnected}
+							<Button variant="ghost" size="sm" onclick={reloadCurrentComponent} title="Reload from disk">
+								<RotateCw class="h-4 w-4" />
+							</Button>
+						{/if}
+						{#if fileSync.isConnected && fileSync.isComponentModified(selectedComponent.path)}
+							<Button variant="outline" size="sm" onclick={saveCurrentComponent} disabled={fileSync.state.isSaving}>
+								<Save class="h-4 w-4 mr-2" /> Save
+							</Button>
+						{/if}
+						<Button
+							variant={secondComponent ? 'secondary' : 'ghost'}
+							size="sm"
+							onclick={() => {
+								if (secondComponent) {
+									closeSideBySide();
+								} else if (selectedConnector) {
+									let first = null;
+									for (const mod of selectedConnector.modules) {
+										for (const c of mod.components) {
+											if (c.path !== selectedComponent.path) { first = c; break; }
+										}
+										if (first) break;
+									}
+									if (first) openSideBySide(first);
+								}
+							}}
+							title="Side by Side"
+						>
+							<Columns2 class="h-4 w-4" />
+						</Button>
+						<Button
+							variant={showAiPanel ? 'secondary' : 'ghost'}
+							size="sm"
+							onclick={() => showAiPanel = !showAiPanel}
+							title="Toggle AI Assistant"
+						>
+							<MessageSquare class="h-4 w-4" />
+						</Button>
+					</div>
 				{/if}
 			</nav>
 		{/if}
@@ -987,264 +1026,123 @@
 		{:else if selectedComponent}
 			{@const comp = selectedComponent.componentJson}
 			<div class="editor-panel">
-				<!-- Editor Header (actions only) -->
-				<div class="editor-header">
-					<div class="editor-header-left">
-						{#if comp.description}
-							<span class="editor-description-inline">{comp.description}</span>
-						{/if}
-						<div class="editor-badges-inline">
-							{#if comp.trigger}
-								<Badge>Trigger</Badge>
-							{/if}
-							{#if comp.webhook}
-								<Badge variant="secondary">Webhook</Badge>
-							{/if}
-							{#if comp.tick}
-								<Badge variant="secondary">Polling</Badge>
-							{/if}
-							{#if comp.auth}
-								<Badge variant="outline">{comp.auth.service}</Badge>
-							{/if}
-						</div>
-					</div>
-					<div class="editor-header-actions">
-						{#if fileSync.isConnected}
-							<Button
-								variant="ghost"
-								size="sm"
-								onclick={reloadCurrentComponent}
-								title="Reload from disk"
-							>
-								<RotateCw class="h-4 w-4" />
-							</Button>
-						{/if}
-						{#if fileSync.isConnected && fileSync.isComponentModified(selectedComponent.path)}
-							<Button
-								variant="outline"
-								size="sm"
-								onclick={saveCurrentComponent}
-								disabled={fileSync.state.isSaving}
-							>
-								<Save class="h-4 w-4 mr-2" />
-								Save
-							</Button>
-						{/if}
-						<Button
-							variant={secondComponent ? 'secondary' : 'ghost'}
-							size="sm"
-							onclick={() => { showComponentPicker = !showComponentPicker; if (!showComponentPicker) secondComponent = null; }}
-							title="Side by Side"
-						>
-							<Columns2 class="h-4 w-4" />
-						</Button>
-						<Button
-							variant={showAiPanel ? 'secondary' : 'ghost'}
-							size="sm"
-							onclick={() => showAiPanel = !showAiPanel}
-							title="Toggle AI Assistant"
-						>
-							<MessageSquare class="h-4 w-4" />
-						</Button>
-					</div>
-				</div>
-
-				<!-- Component Picker for Side-by-Side -->
-				{#if showComponentPicker && !secondComponent && selectedConnector}
-					<div class="component-picker">
-						<span class="picker-label">Open side by side:</span>
-						<select
-							class="breadcrumb-select"
-							value=""
-							onchange={(e) => { const c = findComponentByPath(e.target.value); if (c) openSideBySide(c); }}
-						>
-							<option value="" disabled>Select a component...</option>
-							{#each selectedConnector.modules as module}
-								<optgroup label={module.name}>
-									{#each module.components as c}
-										{#if c.path !== selectedComponent.path}
-											<option value={c.path}>{c.label || c.name}</option>
-										{/if}
-									{/each}
-								</optgroup>
-							{/each}
-						</select>
-						<Button variant="ghost" size="sm" onclick={() => showComponentPicker = false}>
-							<X class="h-3.5 w-3.5" />
-						</Button>
-					</div>
-				{/if}
-
-				<!-- Auth status -->
-				<div class="editor-badges">
-					{#if comp.auth}
-						<Badge variant="outline">{comp.auth.service}</Badge>
-						{#if authStatus === 'checking'}
-							<Badge variant="secondary" class="auth-checking-badge">
-								<Loader2 class="h-3 w-3 spinning" />
-								Checking...
-							</Badge>
-						{:else if authStatus === 'valid'}
-							<Badge variant="outline" class="auth-valid-badge">
-								<ShieldCheck class="h-3 w-3" />
-								Authenticated
-							</Badge>
-						{:else if authStatus === 'failed'}
-							<button class="auth-failed-btn" onclick={() => showAuthForm = !showAuthForm}>
-								<ShieldAlert class="h-3.5 w-3.5" />
-								Auth Failed
-							</button>
-						{/if}
-					{/if}
-				</div>
-
-				<!-- Auth Login Form -->
-				{#if showAuthForm && authInfo}
-					<div class="auth-form-panel">
-						<div class="auth-form-header">
-							<span class="auth-form-title">Authenticate {selectedConnector?.label || selectedConnector?.name}</span>
-							<Badge variant="outline">{authInfo.authType || 'unknown'}</Badge>
-							<button class="auth-form-close" onclick={closeAuthForm}>
-								<X class="h-3.5 w-3.5" />
-							</button>
-						</div>
-
-						{#if authInfo.authType === 'oauth2'}
-							<div class="auth-form-fields">
-								<div class="auth-field">
-									<label class="auth-label">Client ID</label>
-									<Input bind:value={authFormData.clientId} placeholder="Enter client ID" />
-								</div>
-								<div class="auth-field">
-									<label class="auth-label">Client Secret</label>
-									<Input bind:value={authFormData.clientSecret} placeholder="Enter client secret" type="password" />
-								</div>
-								<div class="auth-field">
-									<label class="auth-label">Scopes <span class="auth-optional">(optional, comma-separated)</span></label>
-									<Input bind:value={authFormData.scope} placeholder="e.g. contacts.read,contacts.write" />
-								</div>
-							</div>
-							<div class="auth-form-actions">
-								{#if authLoginRunning}
-									<Button size="sm" variant="destructive" onclick={cancelAuthLogin}>
-										<X class="h-3.5 w-3.5 mr-1" /> Cancel
-									</Button>
-									<span class="auth-running-label">
-										<Loader2 class="h-3.5 w-3.5 spinning" /> Running...
-									</span>
-								{:else}
-									<Button
-										size="sm"
-										onclick={executeAuthLogin}
-										disabled={!authFormData.clientId || !authFormData.clientSecret}
-									>
-										Login
-									</Button>
-								{/if}
-								<button class="auth-copy-btn" onclick={copyAuthCommand} title="Copy command">
-									{#if authCopied}
-										<Check class="h-3.5 w-3.5" />
-									{:else}
-										<Copy class="h-3.5 w-3.5" />
-									{/if}
-								</button>
-							</div>
-						{:else if authInfo.authType === 'pwd'}
-							<div class="auth-form-fields">
-								<div class="auth-field">
-									<label class="auth-label">Username</label>
-									<Input bind:value={authFormData.username} placeholder="Enter username" />
-								</div>
-								<div class="auth-field">
-									<label class="auth-label">Password</label>
-									<Input bind:value={authFormData.password} placeholder="Enter password" type="password" />
-								</div>
-							</div>
-							<div class="auth-form-actions">
-								{#if authLoginRunning}
-									<Button size="sm" variant="destructive" onclick={cancelAuthLogin}>
-										<X class="h-3.5 w-3.5 mr-1" /> Cancel
-									</Button>
-									<span class="auth-running-label">
-										<Loader2 class="h-3.5 w-3.5 spinning" /> Running...
-									</span>
-								{:else}
-									<Button
-										size="sm"
-										onclick={executeAuthLogin}
-										disabled={!authFormData.username || !authFormData.password}
-									>
-										Login
-									</Button>
-								{/if}
-								<button class="auth-copy-btn" onclick={copyAuthCommand} title="Copy command">
-									{#if authCopied}
-										<Check class="h-3.5 w-3.5" />
-									{:else}
-										<Copy class="h-3.5 w-3.5" />
-									{/if}
-								</button>
-							</div>
-						{:else if authInfo.authType === 'apiKey'}
-							<div class="auth-form-actions">
-								{#if authLoginRunning}
-									<Button size="sm" variant="destructive" onclick={cancelAuthLogin}>
-										<X class="h-3.5 w-3.5 mr-1" /> Cancel
-									</Button>
-									<span class="auth-running-label">
-										<Loader2 class="h-3.5 w-3.5 spinning" /> Running...
-									</span>
-								{:else}
-									<Button size="sm" onclick={executeAuthLogin}>
-										Login
-									</Button>
-								{/if}
-								<button class="auth-copy-btn" onclick={copyAuthCommand} title="Copy command">
-									{#if authCopied}
-										<Check class="h-3.5 w-3.5" />
-									{:else}
-										<Copy class="h-3.5 w-3.5" />
-									{/if}
-								</button>
-							</div>
-						{:else}
-							<div class="auth-form-note">
-								<p>Run this command in your terminal:</p>
-							</div>
-							<div class="auth-form-actions">
-								{#if authLoginRunning}
-									<Button size="sm" variant="destructive" onclick={cancelAuthLogin}>
-										<X class="h-3.5 w-3.5 mr-1" /> Cancel
-									</Button>
-									<span class="auth-running-label">
-										<Loader2 class="h-3.5 w-3.5 spinning" /> Running...
-									</span>
-								{:else}
-									<Button size="sm" onclick={executeAuthLogin}>
-										Login
-									</Button>
-								{/if}
-								<button class="auth-copy-btn" onclick={copyAuthCommand} title="Copy command">
-									{#if authCopied}
-										<Check class="h-3.5 w-3.5" /> Copied
-									{:else}
-										<Copy class="h-3.5 w-3.5" /> Copy Command
-									{/if}
-								</button>
-							</div>
-						{/if}
-
-						<code class="auth-command-preview">{buildAuthCommand()}</code>
-
-						{#if authLoginResult}
-							<pre class="auth-result">{authLoginResult}</pre>
-						{/if}
-					</div>
-				{/if}
-
 				<!-- Component Properties + Side-by-Side + AI Panel -->
 				<div class="editor-body-wrapper">
 					<div class="editor-pane">
+						<div class="pane-header">
+							<div class="pane-header-left">
+								{#if selectedConnector?.icon}
+									<img src={selectedConnector.icon} alt="" class="pane-header-icon" />
+								{/if}
+								<select
+									class="pane-component-select"
+									value={selectedComponent.path}
+									onchange={(e) => { const c = findComponentByPath(e.target.value); if (c) selectComponent(c); }}
+								>
+									{#each selectedConnector?.modules || [] as module}
+										<optgroup label={module.name}>
+											{#each module.components as c}
+												<option value={c.path}>{c.label || c.name}</option>
+											{/each}
+										</optgroup>
+									{/each}
+								</select>
+								{#if comp.description}
+									<span class="pane-description">{comp.description}</span>
+								{/if}
+							</div>
+						</div>
+
+						<!-- Auth Login Form -->
+						{#if showAuthForm && authInfo}
+							<div class="auth-form-panel">
+								<div class="auth-form-header">
+									<span class="auth-form-title">Authenticate {selectedConnector?.label || selectedConnector?.name}</span>
+									<Badge variant="outline">{authInfo.authType || 'unknown'}</Badge>
+									<button class="auth-form-close" onclick={closeAuthForm}>
+										<X class="h-3.5 w-3.5" />
+									</button>
+								</div>
+								{#if authInfo.authType === 'oauth2'}
+									<div class="auth-form-fields">
+										<div class="auth-field">
+											<label class="auth-label">Client ID</label>
+											<Input bind:value={authFormData.clientId} placeholder="Enter client ID" />
+										</div>
+										<div class="auth-field">
+											<label class="auth-label">Client Secret</label>
+											<Input bind:value={authFormData.clientSecret} placeholder="Enter client secret" type="password" />
+										</div>
+										<div class="auth-field">
+											<label class="auth-label">Scopes <span class="auth-optional">(optional, comma-separated)</span></label>
+											<Input bind:value={authFormData.scope} placeholder="e.g. contacts.read,contacts.write" />
+										</div>
+									</div>
+									<div class="auth-form-actions">
+										{#if authLoginRunning}
+											<Button size="sm" variant="destructive" onclick={cancelAuthLogin}><X class="h-3.5 w-3.5 mr-1" /> Cancel</Button>
+											<span class="auth-running-label"><Loader2 class="h-3.5 w-3.5 spinning" /> Running...</span>
+										{:else}
+											<Button size="sm" onclick={executeAuthLogin} disabled={!authFormData.clientId || !authFormData.clientSecret}>Login</Button>
+										{/if}
+										<button class="auth-copy-btn" onclick={copyAuthCommand} title="Copy command">
+											{#if authCopied}<Check class="h-3.5 w-3.5" />{:else}<Copy class="h-3.5 w-3.5" />{/if}
+										</button>
+									</div>
+								{:else if authInfo.authType === 'pwd'}
+									<div class="auth-form-fields">
+										<div class="auth-field">
+											<label class="auth-label">Username</label>
+											<Input bind:value={authFormData.username} placeholder="Enter username" />
+										</div>
+										<div class="auth-field">
+											<label class="auth-label">Password</label>
+											<Input bind:value={authFormData.password} placeholder="Enter password" type="password" />
+										</div>
+									</div>
+									<div class="auth-form-actions">
+										{#if authLoginRunning}
+											<Button size="sm" variant="destructive" onclick={cancelAuthLogin}><X class="h-3.5 w-3.5 mr-1" /> Cancel</Button>
+											<span class="auth-running-label"><Loader2 class="h-3.5 w-3.5 spinning" /> Running...</span>
+										{:else}
+											<Button size="sm" onclick={executeAuthLogin} disabled={!authFormData.username || !authFormData.password}>Login</Button>
+										{/if}
+										<button class="auth-copy-btn" onclick={copyAuthCommand} title="Copy command">
+											{#if authCopied}<Check class="h-3.5 w-3.5" />{:else}<Copy class="h-3.5 w-3.5" />{/if}
+										</button>
+									</div>
+								{:else if authInfo.authType === 'apiKey'}
+									<div class="auth-form-actions">
+										{#if authLoginRunning}
+											<Button size="sm" variant="destructive" onclick={cancelAuthLogin}><X class="h-3.5 w-3.5 mr-1" /> Cancel</Button>
+											<span class="auth-running-label"><Loader2 class="h-3.5 w-3.5 spinning" /> Running...</span>
+										{:else}
+											<Button size="sm" onclick={executeAuthLogin}>Login</Button>
+										{/if}
+										<button class="auth-copy-btn" onclick={copyAuthCommand} title="Copy command">
+											{#if authCopied}<Check class="h-3.5 w-3.5" />{:else}<Copy class="h-3.5 w-3.5" />{/if}
+										</button>
+									</div>
+								{:else}
+									<div class="auth-form-note"><p>Run this command in your terminal:</p></div>
+									<div class="auth-form-actions">
+										{#if authLoginRunning}
+											<Button size="sm" variant="destructive" onclick={cancelAuthLogin}><X class="h-3.5 w-3.5 mr-1" /> Cancel</Button>
+											<span class="auth-running-label"><Loader2 class="h-3.5 w-3.5 spinning" /> Running...</span>
+										{:else}
+											<Button size="sm" onclick={executeAuthLogin}>Login</Button>
+										{/if}
+										<button class="auth-copy-btn" onclick={copyAuthCommand} title="Copy command">
+											{#if authCopied}<Check class="h-3.5 w-3.5" /> Copied{:else}<Copy class="h-3.5 w-3.5" /> Copy Command{/if}
+										</button>
+									</div>
+								{/if}
+								<code class="auth-command-preview">{buildAuthCommand()}</code>
+								{#if authLoginResult}
+									<pre class="auth-result">{authLoginResult}</pre>
+								{/if}
+							</div>
+						{/if}
 						<div class="properties-scroll">
 							<ComponentPreview
 								componentJson={comp}
@@ -1264,8 +1162,28 @@
 					</div>
 					{#if secondComponent}
 						<div class="editor-pane secondary-pane">
-							<div class="secondary-pane-header">
-								<span class="secondary-pane-title">{secondComponent.componentJson.label || secondComponent.name}</span>
+							<div class="pane-header">
+								<div class="pane-header-left">
+									{#if selectedConnector?.icon}
+										<img src={selectedConnector.icon} alt="" class="pane-header-icon" />
+									{/if}
+									<select
+										class="pane-component-select"
+										value={secondComponent.path}
+										onchange={(e) => { const c = findComponentByPath(e.target.value); if (c) openSideBySide(c); }}
+									>
+										{#each selectedConnector?.modules || [] as module}
+											<optgroup label={module.name}>
+												{#each module.components as c}
+													<option value={c.path}>{c.label || c.name}</option>
+												{/each}
+											</optgroup>
+										{/each}
+									</select>
+									{#if secondComponent.componentJson.description}
+										<span class="pane-description">{secondComponent.componentJson.description}</span>
+									{/if}
+								</div>
 								<button class="secondary-pane-close" onclick={closeSideBySide}>
 									<X class="h-3.5 w-3.5" />
 								</button>
@@ -1541,6 +1459,13 @@
 		min-height: 40px;
 	}
 
+	.breadcrumb-actions {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		margin-left: auto;
+	}
+
 	.breadcrumb-item {
 		display: inline-flex;
 		align-items: center;
@@ -1726,17 +1651,57 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		padding: 8px 16px;
+		gap: 12px;
+		padding: 8px 20px;
 		border-bottom: 1px solid var(--color-border);
-		background: var(--color-muted);
+		background: var(--color-card);
+	}
+
+	.secondary-pane-header-left {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+	}
+
+	.secondary-pane-icon {
+		width: 20px;
+		height: 20px;
+		border-radius: 3px;
+		flex-shrink: 0;
+	}
+
+	.secondary-pane-title-group {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		min-width: 0;
+		overflow: hidden;
 	}
 
 	.secondary-pane-title {
 		font-size: 13px;
-		font-weight: 500;
+		font-weight: 600;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	.secondary-pane-description {
+		font-size: 12px;
+		color: var(--color-muted-foreground);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.secondary-pane-badges {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		flex-shrink: 0;
 	}
 
 	.secondary-pane-close {
@@ -1756,6 +1721,74 @@
 	.secondary-pane-close:hover {
 		background: var(--color-accent);
 		color: var(--color-foreground);
+	}
+
+	/* Pane headers (shared between left and right) */
+	.pane-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+		padding: 8px 16px;
+		border-bottom: 1px solid var(--color-border);
+		background: var(--color-card);
+		flex-shrink: 0;
+	}
+
+	.pane-header-left {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+	}
+
+	.pane-header-icon {
+		width: 20px;
+		height: 20px;
+		border-radius: 3px;
+		flex-shrink: 0;
+	}
+
+	.pane-component-select {
+		padding: 4px 8px;
+		font-size: 13px;
+		font-weight: 600;
+		color: var(--color-foreground);
+		border: 1px solid transparent;
+		border-radius: var(--radius-sm);
+		background: transparent;
+		cursor: pointer;
+		appearance: auto;
+		flex-shrink: 0;
+		max-width: 220px;
+	}
+
+	.pane-component-select:hover {
+		background: var(--color-muted);
+		border-color: var(--color-border);
+	}
+
+	.pane-component-select:focus {
+		outline: none;
+		border-color: var(--color-ring);
+		background: var(--color-background);
+	}
+
+	.pane-header-actions {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		flex-shrink: 0;
+	}
+
+	.pane-description {
+		font-size: 12px;
+		color: var(--color-muted-foreground);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.ai-panel {

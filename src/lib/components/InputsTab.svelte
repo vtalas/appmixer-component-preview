@@ -7,7 +7,7 @@
 	import {
 		Play, Square, Loader2, ChevronDown, ChevronRight,
 		CheckCircle2, XCircle, Clock, Copy, Check,
-		RotateCw, Pencil, Trash2, ExternalLink
+		RotateCw, Pencil, Trash2, ExternalLink, Sparkles
 	} from 'lucide-svelte';
 	import { stripAnsi } from '$lib/utils/commandRunner.svelte.js';
 
@@ -18,6 +18,7 @@
 		onRunTest, onStopTest, testRunning = false,
 		hasTick = false,
 		testResults = [],
+		testPlanData = null,
 		onRerunCommand, onDeleteCommand, onEditCommand, onShowInPopup,
 		runningCommand = null
 	} = $props();
@@ -31,6 +32,10 @@
 
 	// Track expanded test result entries
 	let expandedResults = $state(new Set());
+
+	// Required fields warning dialog state
+	let showRequiredWarning = $state(false);
+	let missingRequiredFields = $state([]);
 
 	// Edit modal state
 	let editingCmd = $state(null); // { cmdIndex, inputJson, error }
@@ -95,12 +100,213 @@
 		};
 	}
 
+	function getMissingRequiredFields() {
+		const missing = [];
+		for (const port of (componentJson.inPorts || [])) {
+			const requiredKeys = port.schema?.required || [];
+			if (requiredKeys.length === 0) continue;
+			const portValues = portFormValues[port.name] || {};
+			for (const key of requiredKeys) {
+				const val = portValues[key];
+				if (val === undefined || val === null || val === '') {
+					const input = port.inspector?.inputs?.[key];
+					const label = input?.label || key;
+					missing.push({ port: port.name, key, label });
+				}
+			}
+		}
+		return missing;
+	}
+
 	function handleRunTest() {
+		if (!onRunTest) return;
+		const missing = getMissingRequiredFields();
+		if (missing.length > 0) {
+			missingRequiredFields = missing;
+			showRequiredWarning = true;
+			return;
+		}
+		executeRunTest();
+	}
+
+	function executeRunTest() {
+		showRequiredWarning = false;
 		if (!onRunTest) return;
 		onRunTest({
 			portValues: portFormValues,
 			tickPeriod
 		});
+	}
+
+	// ── Generate Data ───────────────────────────────────────────────────
+
+	/**
+	 * Scan all test plan results (successful commands from other components)
+	 * and extract key-value pairs from stdout that look like output fields.
+	 * Returns a Map of lowercase field name → value.
+	 */
+	function extractValuesFromTestPlan() {
+		const values = new Map(); // lowercase key → { value, component }
+		if (!testPlanData || !Array.isArray(testPlanData)) return values;
+
+		for (const item of testPlanData) {
+			const commands = item.result?.commands || [];
+			// Take the last successful command
+			for (let i = commands.length - 1; i >= 0; i--) {
+				const cmd = commands[i];
+				if (cmd.exitCode !== 0 || !cmd.stdout) continue;
+
+				const cleaned = stripAnsi(cmd.stdout);
+
+				// Parse key: value patterns from stdout (common in appmixer test output)
+				// Matches patterns like:  ID: '365208673490'  or  id: '123'  or  Name: 'Test'
+				const kvPattern = /(\w+):\s+'([^']+)'/g;
+				let match;
+				while ((match = kvPattern.exec(cleaned)) !== null) {
+					const key = match[1].toLowerCase();
+					const val = match[2];
+					// Prefer values that look like IDs (numeric or alphanumeric)
+					if (!values.has(key) || val.match(/^\d+$/)) {
+						values.set(key, { value: val, component: item.name });
+					}
+				}
+
+				// Also parse -i JSON from the command to get what inputs were used
+				const iRange = extractInputJsonRange(cmd.cmd || cmd.command || '');
+				if (iRange) {
+					try {
+						const inputJson = JSON.parse((cmd.cmd || cmd.command || '').slice(iRange.start, iRange.end));
+						for (const [port, portVals] of Object.entries(inputJson)) {
+							if (typeof portVals === 'object' && portVals !== null) {
+								for (const [k, v] of Object.entries(portVals)) {
+									if (v && typeof v === 'string') {
+										const key = k.toLowerCase();
+										if (!values.has(key)) {
+											values.set(key, { value: v, component: item.name });
+										}
+									}
+								}
+							}
+						}
+					} catch { /* skip */ }
+				}
+
+				break; // only use last successful command per component
+			}
+		}
+		return values;
+	}
+
+	function generateData() {
+		const extractedValues = extractValuesFromTestPlan();
+
+		for (const port of (componentJson.inPorts || [])) {
+			if (!port.inspector?.inputs) continue;
+
+			if (!portFormValues[port.name]) {
+				portFormValues[port.name] = {};
+			}
+
+			for (const [key, input] of Object.entries(port.inspector.inputs)) {
+				// Skip if already filled
+				const current = portFormValues[port.name][key];
+				if (current !== undefined && current !== null && current !== '') continue;
+
+				const keyLower = key.toLowerCase();
+				const label = (input.label || '').toLowerCase();
+				const type = input.type || 'text';
+
+				let generated = null;
+
+				// 1. For ID-like fields, search test plan results
+				if (keyLower.includes('id') || label.includes('id')) {
+					// Try exact match first
+					if (extractedValues.has(keyLower)) {
+						generated = extractedValues.get(keyLower).value;
+					} else if (extractedValues.has(key)) {
+						generated = extractedValues.get(key).value;
+					} else {
+						// Try partial match - e.g. "folderId" matches "id" from a folder-related component
+						// Strip "id" suffix and look for the entity type
+						const entity = keyLower.replace(/id$/, '').replace(/_id$/, '');
+						if (entity) {
+							// Look for "id" in a component whose name contains the entity
+							for (const [, entry] of extractedValues) {
+								if (entry.component && entry.component.toLowerCase().includes(entity)) {
+									// Check if there's an "id" value from that component
+									generated = entry.value;
+									break;
+								}
+							}
+						}
+						// Fallback: look for any 'id' value
+						if (!generated && extractedValues.has('id')) {
+							generated = extractedValues.get('id').value;
+						}
+					}
+				}
+
+				// 2. For select fields, pick the first option
+				if (!generated && (type === 'select' || type === 'multiselect')) {
+					if (input.options && input.options.length > 0) {
+						const firstOpt = input.options[0];
+						generated = typeof firstOpt === 'object' ? (firstOpt.value ?? firstOpt.content) : firstOpt;
+					}
+				}
+
+				// 3. For date-time fields
+				if (!generated && type === 'date-time') {
+					// Generate a date ~1 week in the future, ISO 8601 format
+					const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+					future.setMinutes(0, 0, 0);
+					generated = future.toISOString().replace(/\.\d{3}Z$/, 'Z');
+				}
+
+				// 4. For toggle fields
+				if (!generated && type === 'toggle') {
+					generated = 'true';
+				}
+
+				// 4. For text-like fields, generate sensible defaults
+				if (!generated && (type === 'text' || type === 'textarea' || type === 'number')) {
+					if (keyLower.includes('date') || keyLower.endsWith('_at') || keyLower.endsWith('at')
+						|| label.includes('date') || label.includes('time')
+						|| keyLower.includes('start') || keyLower.includes('end')) {
+						const offset = keyLower.includes('end') || keyLower.includes('to') ? 14 : 7;
+						const future = new Date(Date.now() + offset * 24 * 60 * 60 * 1000);
+						future.setMinutes(0, 0, 0);
+						generated = future.toISOString().replace(/\.\d{3}Z$/, 'Z');
+					} else if (keyLower.includes('email')) {
+						generated = 'test@example.com';
+					} else if (keyLower.includes('name') || label.includes('name')) {
+						generated = `Test ${key} ${Date.now().toString(36)}`;
+					} else if (keyLower.includes('url') || label.includes('url')) {
+						generated = 'https://example.com';
+					} else if (keyLower.includes('phone') || label.includes('phone')) {
+						generated = '+1234567890';
+					} else if (type === 'number') {
+						generated = '1';
+					} else if (keyLower.includes('description') || keyLower.includes('desc') || label.includes('description')) {
+						generated = 'Test description';
+					} else {
+						// Check test plan for any matching field name
+						if (extractedValues.has(keyLower)) {
+							generated = extractedValues.get(keyLower).value;
+						}
+					}
+				}
+
+				if (generated !== null) {
+					portFormValues[port.name][key] = generated;
+					// Notify form value change handler
+					const handler = createFormValueChangeHandler(port.name);
+					handler(key, generated);
+				}
+			}
+		}
+
+		// Force reactivity
+		portFormValues = { ...portFormValues };
 	}
 
 	function toggleResult(index) {
@@ -261,6 +467,7 @@
 				onFieldsChange={createFieldsChangeHandler(port.name)}
 				onSourceChange={createSourceChangeHandler(port.name)}
 				onFormValueChange={createFormValueChangeHandler(port.name)}
+				externalFormValues={portFormValues[port.name]}
 			/>
 		{:else if port.schema}
 			<div class="schema-section">
@@ -312,6 +519,9 @@
 			{:else}
 				<Button variant="default" size="sm" onclick={handleRunTest}>
 					<Play class="h-4 w-4 mr-1" /> Run Test
+				</Button>
+				<Button variant="outline" size="sm" onclick={generateData} title="Auto-fill inputs with test data from other components">
+					<Sparkles class="h-4 w-4 mr-1" /> Generate Data
 				</Button>
 			{/if}
 		</div>
@@ -434,6 +644,36 @@
 			</div>
 		</div>
 	{/if}
+{/if}
+
+<!-- Required Fields Warning Dialog -->
+{#if showRequiredWarning}
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="edit-modal-overlay" onclick={() => showRequiredWarning = false}>
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div class="edit-modal required-warning-modal" onclick={(e) => e.stopPropagation()}>
+			<div class="edit-modal-header">
+				<span class="edit-modal-title">⚠️ Missing Required Fields</span>
+				<button class="edit-modal-close" onclick={() => showRequiredWarning = false}>&times;</button>
+			</div>
+			<div class="edit-modal-body">
+				<p class="required-warning-text">The following required fields are empty:</p>
+				<ul class="required-warning-list">
+					{#each missingRequiredFields as field}
+						<li>
+							<strong>{field.label}</strong>
+							{#if field.port !== 'in'}<span class="required-warning-port">({field.port})</span>{/if}
+						</li>
+					{/each}
+				</ul>
+				<p class="required-warning-subtext">The test may fail without these values.</p>
+			</div>
+			<div class="edit-modal-footer">
+				<button class="edit-modal-btn edit-modal-btn-cancel" onclick={() => showRequiredWarning = false}>Cancel</button>
+				<button class="edit-modal-btn edit-modal-btn-save" onclick={executeRunTest}>Run Anyway</button>
+			</div>
+		</div>
+	</div>
 {/if}
 
 <!-- Edit Command Modal -->
@@ -976,5 +1216,39 @@
 	.edit-modal-btn-save:hover {
 		background: #2563eb;
 		border-color: #2563eb;
+	}
+
+	/* Required Warning Dialog */
+	.required-warning-modal {
+		width: 420px;
+	}
+
+	.required-warning-text {
+		font-size: 13px;
+		margin: 0 0 10px;
+		color: var(--color-foreground);
+	}
+
+	.required-warning-list {
+		margin: 0 0 12px;
+		padding-left: 20px;
+		font-size: 13px;
+		line-height: 1.6;
+	}
+
+	.required-warning-list li {
+		color: var(--color-foreground);
+	}
+
+	.required-warning-port {
+		font-size: 11px;
+		color: var(--color-muted-foreground);
+		margin-left: 4px;
+	}
+
+	.required-warning-subtext {
+		font-size: 12px;
+		color: var(--color-muted-foreground);
+		margin: 0;
 	}
 </style>

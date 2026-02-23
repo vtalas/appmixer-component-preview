@@ -36,7 +36,7 @@
 		{ value: 'filepicker', label: 'File Picker' }
 	];
 
-	let { inspector, schema, portName = 'in', onInputChange, onRequiredChange, onTypeChange, onOptionsChange, onFieldsChange, onSourceChange, onFormValueChange } = $props();
+	let { inspector, schema, portName = 'in', onInputChange, onRequiredChange, onTypeChange, onOptionsChange, onFieldsChange, onSourceChange, onFormValueChange, externalFormValues = null } = $props();
 
 	// Track expanded options editors
 	let expandedOptionsEditors = $state(new Set());
@@ -49,6 +49,17 @@
 
 	// Form values state
 	let formValues = $state({});
+
+	// Sync external form values (e.g. from "Generate Data")
+	$effect(() => {
+		if (externalFormValues) {
+			for (const [key, value] of Object.entries(externalFormValues)) {
+				if (value !== undefined && value !== null && value !== '') {
+					formValues[key] = value;
+				}
+			}
+		}
+	});
 
 	// Group expansion state
 	let expandedGroups = $state(new Set());

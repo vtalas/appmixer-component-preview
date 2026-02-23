@@ -411,6 +411,7 @@
 					{testRunning}
 					hasTick={!!componentJson.tick}
 					{testResults}
+					{testPlanData}
 					onRerunCommand={rerunCommand}
 					onDeleteCommand={deleteCommand}
 					onEditCommand={editCommand}
