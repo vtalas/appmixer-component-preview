@@ -4,7 +4,7 @@
  * CLI runner for the self-improving test flow agent.
  *
  * Usage:
- *   node run.js <path-to-flow.json> [options]
+ *   node agents/run.js <path-to-flow.json> [options]
  *
  * Options:
  *   --max-iterations N    Max generate→review iterations per meta round (default: 5)
@@ -12,20 +12,20 @@
  *   --generator-model M   Model for generator (default: sonnet)
  *   --reviewer-model M    Model for reviewer (default: sonnet)
  *   --meta-model M        Model for meta-improver (default: sonnet)
- *   --schema PATH         Path to flow-schema.json
- *   --context PATH        Path to connector context file (e.g., copilot-instructions.md section)
+ *   --context PATH        Path to connector context file
  *   --output PATH         Path to write the improved flow (default: overwrites input)
+ *
+ * Requires: Claude Code CLI (`claude`) installed and authenticated (Claude Max).
  */
 
 import fs from 'fs';
-import path from 'path';
 import { run } from './selfImprovingTestFlowAgent.js';
 
 const args = process.argv.slice(2);
 const flowPath = args.find(a => !a.startsWith('--'));
 
 if (!flowPath) {
-    console.error('Usage: node run.js <path-to-flow.json> [options]');
+    console.error('Usage: node agents/run.js <path-to-flow.json> [options]');
     process.exit(1);
 }
 
@@ -43,7 +43,6 @@ const result = await run({
     generatorModel: getArg('generator-model', 'sonnet'),
     reviewerModel: getArg('reviewer-model', 'sonnet'),
     metaModel: getArg('meta-model', 'sonnet'),
-    flowSchemaPath: getArg('schema', null),
     connectorContext: getArg('context', null) ? fs.readFileSync(getArg('context', ''), 'utf-8') : ''
 });
 

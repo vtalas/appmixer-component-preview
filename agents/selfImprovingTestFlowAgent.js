@@ -4,14 +4,14 @@
  * Orchestrates a generate → review → fix loop for E2E test flows.
  * After N failed iterations, invokes a meta-improver that edits
  * the generator and reviewer system prompts to reduce recurring errors.
+ *
+ * Uses Claude Code CLI (claude) — works with Claude Max subscription, no API key needed.
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import Ajv from 'ajv';
-import chalk from 'chalk';
+import { execFileSync } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -23,31 +23,55 @@ const LOGS_DIR = path.join(__dirname, 'logs');
 
 const readPrompt = (name) => fs.readFileSync(path.join(PROMPTS_DIR, `${name}.md`), 'utf-8');
 const writePrompt = (name, content) => fs.writeFileSync(path.join(PROMPTS_DIR, `${name}.md`), content);
-
 const ensureDir = (dir) => { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); };
 
+/**
+ * Call Claude Code CLI.
+ * Uses `claude -p` for one-shot prompts with system prompt via --system-prompt.
+ */
 const runLLM = async ({ systemPrompt, userPrompt, model = 'sonnet', silent = false }) => {
-    const result = query({
-        prompt: userPrompt,
-        options: {
-            model,
-            tools: [],
-            systemPrompt,
-            maxTurns: 1,
-            permissionMode: 'bypassPermissions',
-            allowDangerouslySkipPermissions: true
-        }
-    });
+    const args = [
+        '-p', userPrompt,
+        '--output-format', 'json',
+        '--max-turns', '1',
+        '--no-input'
+    ];
 
-    let finalResult = null;
-    for await (const message of result) {
-        if (message.type === 'assistant' && !silent) {
-            const text = message.message?.content?.find(b => b.type === 'text')?.text;
-            if (text) console.log(chalk.gray(text.substring(0, 200) + '...'));
-        }
-        if (message.type === 'result') finalResult = message;
+    if (systemPrompt) {
+        args.push('--system-prompt', systemPrompt);
     }
-    return finalResult?.result || '';
+
+    if (model) {
+        args.push('--model', model);
+    }
+
+    try {
+        const result = execFileSync('claude', args, {
+            encoding: 'utf-8',
+            maxBuffer: 10 * 1024 * 1024, // 10MB
+            timeout: 120_000, // 2 min
+            env: { ...process.env }
+        });
+
+        const parsed = JSON.parse(result);
+        const text = parsed.result || '';
+
+        if (!silent) {
+            const preview = text.substring(0, 200);
+            console.log(`  [${model}] ${preview}${text.length > 200 ? '...' : ''}`);
+        }
+
+        return text;
+    } catch (err) {
+        console.error(`  ⚠️  Claude CLI error: ${err.message}`);
+        if (err.stdout) {
+            try {
+                const parsed = JSON.parse(err.stdout);
+                return parsed.result || '';
+            } catch { /* ignore */ }
+        }
+        return '';
+    }
 };
 
 const extractJSON = (text) => {
@@ -56,18 +80,24 @@ const extractJSON = (text) => {
         try { return JSON.parse(match[1].trim()); } catch { /* continue */ }
     }
     // Try raw JSON
-    try { return JSON.parse(text); } catch { /* continue */ }
-    // Try finding JSON object
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-        try { return JSON.parse(jsonMatch[0]); } catch { /* continue */ }
+    try { return JSON.parse(text.trim()); } catch { /* continue */ }
+    // Try finding outermost JSON object
+    let depth = 0, start = -1;
+    for (let i = 0; i < text.length; i++) {
+        if (text[i] === '{') { if (depth === 0) start = i; depth++; }
+        else if (text[i] === '}') {
+            depth--;
+            if (depth === 0 && start !== -1) {
+                try { return JSON.parse(text.slice(start, i + 1)); } catch { start = -1; }
+            }
+        }
     }
     return null;
 };
 
-// --- Deterministic validation (from testFlowAgent.js patterns) ---
+// --- Deterministic validation ---
 
-const deterministicValidation = (flowJson, componentSchemas = {}) => {
+const deterministicValidation = (flowJson) => {
     const errors = [];
 
     if (!flowJson.name) {
@@ -82,7 +112,6 @@ const deterministicValidation = (flowJson, componentSchemas = {}) => {
     }
 
     const components = flowJson.flow;
-    const componentIds = Object.keys(components);
 
     // Required component types
     const types = Object.values(components).map(c => c.type);
@@ -96,7 +125,7 @@ const deterministicValidation = (flowJson, componentSchemas = {}) => {
         errors.push({ severity: 'critical', component: null, rule: 'required-component', message: 'Missing ProcessE2EResults component' });
     }
 
-    // Find AfterAll and count assert connections
+    // AfterAll ↔ Assert connections
     const afterAllEntry = Object.entries(components).find(([, c]) => c.type === 'appmixer.utils.test.AfterAll');
     const assertIds = Object.entries(components)
         .filter(([, c]) => c.type === 'appmixer.utils.test.Assert')
@@ -104,21 +133,21 @@ const deterministicValidation = (flowJson, componentSchemas = {}) => {
 
     if (afterAllEntry && assertIds.length > 0) {
         const afterAllSources = Object.keys(afterAllEntry[1].source?.in || {});
-        const missingAsserts = assertIds.filter(id => !afterAllSources.includes(id));
-        for (const id of missingAsserts) {
-            errors.push({
-                severity: 'critical', component: id, rule: 'afterall-connection',
-                message: `Assert "${id}" is NOT connected to AfterAll's source.in. This will cause silent test failure.`
-            });
+        for (const id of assertIds) {
+            if (!afterAllSources.includes(id)) {
+                errors.push({
+                    severity: 'critical', component: id, rule: 'afterall-connection',
+                    message: `Assert "${id}" is NOT connected to AfterAll's source.in`
+                });
+            }
         }
     }
 
-    // Variable mapping validation
+    // Variable mapping & source connection validation
     for (const [compId, comp] of Object.entries(components)) {
         if (!comp.config?.transform?.in) continue;
 
         for (const [sourceId, sourceConfig] of Object.entries(comp.config.transform.in)) {
-            // Check source exists in source.in
             const compSources = Object.keys(comp.source?.in || {});
             if (!compSources.includes(sourceId)) {
                 errors.push({
@@ -130,71 +159,69 @@ const deterministicValidation = (flowJson, componentSchemas = {}) => {
             const outConfig = sourceConfig?.out;
             if (!outConfig?.modifiers || !outConfig?.lambda) continue;
 
-            // Check each modifier has corresponding lambda reference
             for (const [fieldName, modifierDef] of Object.entries(outConfig.modifiers)) {
                 if (typeof modifierDef !== 'object' || Object.keys(modifierDef).length === 0) continue;
 
                 const varIds = Object.keys(modifierDef);
                 const lambdaValue = outConfig.lambda[fieldName];
 
-                // Special handling for expression (assert) - check nested
+                // Assert expression — check nested AND array
                 if (fieldName === 'expression' && typeof lambdaValue === 'object') {
-                    // Check inside AND array
                     const andArray = lambdaValue?.AND || [];
                     for (const varId of varIds) {
-                        const referenced = JSON.stringify(andArray).includes(`{{{${varId}}}}`);
-                        if (!referenced) {
+                        if (!JSON.stringify(andArray).includes(`{{{${varId}}}}`)) {
                             errors.push({
                                 severity: 'critical', component: compId, rule: 'variable-mapping',
-                                message: `Modifier variable "${varId}" in expression is not referenced in lambda AND array`
+                                message: `Modifier "${varId}" in expression not referenced in lambda AND array`
                             });
                         }
                     }
                     continue;
                 }
 
-                // Normal field - lambda should contain {{{varId}}}
+                // Normal field
                 if (typeof lambdaValue === 'string') {
                     for (const varId of varIds) {
-                        if (!lambdaValue.includes(`{{{${varId}}}`)) {
+                        if (!lambdaValue.includes(`{{{${varId}}}}`)) {
                             errors.push({
                                 severity: 'critical', component: compId, rule: 'variable-mapping',
-                                message: `Modifier defines "${varId}" for field "${fieldName}" but lambda value is "${lambdaValue}" — should contain {{{${varId}}}}`
+                                message: `Modifier "${varId}" for "${fieldName}" not referenced in lambda. Lambda: "${lambdaValue}"`
                             });
                         }
                     }
                 } else if (lambdaValue === '' || lambdaValue === undefined) {
                     errors.push({
                         severity: 'critical', component: compId, rule: 'variable-mapping',
-                        message: `Lambda for "${fieldName}" is empty but modifier defines variables: ${varIds.join(', ')}`
+                        message: `Lambda for "${fieldName}" is empty but modifier defines: ${varIds.join(', ')}`
                     });
                 }
             }
 
-            // Check variable paths reference accessible components
-            const checkVariablePaths = (obj) => {
+            // Variable path → source.in check
+            const checkPaths = (obj) => {
                 if (!obj || typeof obj !== 'object') return;
                 if (obj.variable && typeof obj.variable === 'string') {
                     const match = obj.variable.match(/^\$\.([^.]+)\./);
                     if (match) {
-                        const referencedComp = match[1];
-                        if (!compSources.includes(referencedComp) && referencedComp !== compId) {
+                        const ref = match[1];
+                        const compSrcs = Object.keys(comp.source?.in || {});
+                        if (!compSrcs.includes(ref) && ref !== compId) {
                             errors.push({
                                 severity: 'critical', component: compId, rule: 'variable-path',
-                                message: `Variable path "${obj.variable}" references "${referencedComp}" which is not in source.in`
+                                message: `Variable "${obj.variable}" references "${ref}" not in source.in`
                             });
                         }
                     }
                 }
                 for (const val of Object.values(obj)) {
-                    if (typeof val === 'object') checkVariablePaths(val);
+                    if (typeof val === 'object') checkPaths(val);
                 }
             };
-            checkVariablePaths(outConfig.modifiers);
+            checkPaths(outConfig.modifiers);
         }
     }
 
-    // ProcessE2EResults validation
+    // ProcessE2EResults
     const processEntry = Object.entries(components).find(([, c]) => c.type === 'appmixer.utils.test.ProcessE2EResults');
     if (processEntry) {
         const [procId, procComp] = processEntry;
@@ -205,7 +232,6 @@ const deterministicValidation = (flowJson, componentSchemas = {}) => {
             errors.push({ severity: 'critical', component: procId, rule: 'process-config', message: 'Missing failedStoreId' });
         }
 
-        // Check result variable mapping
         const transformIn = procComp.config?.transform?.in;
         if (transformIn) {
             const sourceKey = Object.keys(transformIn)[0];
@@ -213,10 +239,10 @@ const deterministicValidation = (flowJson, componentSchemas = {}) => {
             const resultLambda = transformIn[sourceKey]?.out?.lambda?.result;
             if (resultModifier && Object.keys(resultModifier).length > 0) {
                 const varId = Object.keys(resultModifier)[0];
-                if (!resultLambda || !resultLambda.includes(`{{{${varId}}}`)) {
+                if (!resultLambda || !resultLambda.includes(`{{{${varId}}}}`)) {
                     errors.push({
                         severity: 'critical', component: procId, rule: 'process-result',
-                        message: `ProcessE2EResults result lambda should be "{{{${varId}}}}" but got "${resultLambda}"`
+                        message: `ProcessE2EResults result should be "{{{${varId}}}}" but got "${resultLambda}"`
                     });
                 }
             }
@@ -226,47 +252,21 @@ const deterministicValidation = (flowJson, componentSchemas = {}) => {
     return errors;
 };
 
-// --- JSON Schema validation ---
-
-const schemaValidation = (flowJson, schemaPath) => {
-    if (!schemaPath || !fs.existsSync(schemaPath)) return [];
-    try {
-        const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf-8'));
-        const ajv = new Ajv({ allErrors: true, strict: false });
-        const validate = ajv.compile(schema);
-        if (!validate(flowJson.flow || flowJson)) {
-            return validate.errors.map(err => ({
-                severity: 'critical',
-                component: null,
-                rule: 'json-schema',
-                message: `${err.instancePath} ${err.message}`
-            }));
-        }
-    } catch (e) {
-        return [{ severity: 'warning', component: null, rule: 'json-schema', message: `Schema validation error: ${e.message}` }];
-    }
-    return [];
-};
-
 // --- Main orchestrator ---
 
 /**
  * @param {Object} options
  * @param {Object} options.flowJson - Initial flow JSON to improve
- * @param {Object} options.componentSchemas - Map of componentType -> schema info (from component.json)
- * @param {string} [options.flowSchemaPath] - Path to flow-schema.json for JSON schema validation
  * @param {number} [options.maxIterations=5] - Max generate→review iterations before meta-improvement
  * @param {number} [options.maxMetaRounds=3] - Max meta-improvement rounds
  * @param {string} [options.generatorModel='sonnet'] - Model for generator
- * @param {string} [options.reviewerModel='sonnet'] - Model for reviewer (use different for diversity)
+ * @param {string} [options.reviewerModel='sonnet'] - Model for reviewer (different model = more diverse review)
  * @param {string} [options.metaModel='sonnet'] - Model for meta-improver
- * @param {string} [options.connectorContext] - Additional context about the connector
- * @returns {Promise<{flowJson: Object, iterations: number, metaRounds: number, history: Array}>}
+ * @param {string} [options.connectorContext=''] - Additional context about the connector
+ * @returns {Promise<{flowJson: Object, iterations: number, metaRounds: number, history: Array, success: boolean}>}
  */
 export const run = async ({
     flowJson,
-    componentSchemas = {},
-    flowSchemaPath = null,
     maxIterations = 5,
     maxMetaRounds = 3,
     generatorModel = 'sonnet',
@@ -281,33 +281,31 @@ export const run = async ({
     let totalIterations = 0;
 
     for (let metaRound = 0; metaRound < maxMetaRounds; metaRound++) {
-        console.log(chalk.blue(`\n=== Meta Round ${metaRound + 1}/${maxMetaRounds} ===\n`));
+        console.log(`\n=== Meta Round ${metaRound + 1}/${maxMetaRounds} ===\n`);
 
-        const roundErrors = []; // Collect errors across iterations for meta-improver
+        const roundErrors = [];
 
         for (let iteration = 0; iteration < maxIterations; iteration++) {
             totalIterations++;
-            console.log(chalk.cyan(`--- Iteration ${iteration + 1}/${maxIterations} (total: ${totalIterations}) ---`));
+            console.log(`--- Iteration ${iteration + 1}/${maxIterations} (total: ${totalIterations}) ---`);
 
             // Step 1: Deterministic validation
-            const detErrors = deterministicValidation(currentFlow, componentSchemas);
-            const schemaErrors = schemaValidation(currentFlow, flowSchemaPath);
-            const allDetErrors = [...detErrors, ...schemaErrors];
+            const detErrors = deterministicValidation(currentFlow);
 
-            if (allDetErrors.length > 0) {
-                console.log(chalk.red(`Deterministic validation: ${allDetErrors.length} errors`));
-                allDetErrors.forEach(e => console.log(chalk.red(`  [${e.severity}] ${e.rule}: ${e.message}`)));
+            if (detErrors.length > 0) {
+                console.log(`  ❌ Deterministic: ${detErrors.length} errors`);
+                detErrors.forEach(e => console.log(`    [${e.severity}] ${e.rule}: ${e.message}`));
             } else {
-                console.log(chalk.green('Deterministic validation: PASSED'));
+                console.log('  ✅ Deterministic: PASSED');
             }
 
-            // Step 2: LLM Review (even if deterministic passed — catches semantic issues)
+            // Step 2: LLM Review
             const reviewerPrompt = readPrompt('reviewer-system');
             const reviewInput = `Review this E2E test flow JSON:\n\n${JSON.stringify(currentFlow, null, 2)}` +
-                (connectorContext ? `\n\nComponent schemas for reference:\n${connectorContext}` : '') +
-                (allDetErrors.length > 0 ? `\n\nDeterministic validation already found these errors (confirm and find more):\n${JSON.stringify(allDetErrors, null, 2)}` : '');
+                (connectorContext ? `\n\nComponent schemas:\n${connectorContext}` : '') +
+                (detErrors.length > 0 ? `\n\nDeterministic validation found:\n${JSON.stringify(detErrors, null, 2)}` : '');
 
-            console.log(chalk.yellow('Running LLM review...'));
+            console.log('  🔍 LLM review...');
             const reviewRaw = await runLLM({
                 systemPrompt: reviewerPrompt,
                 userPrompt: reviewInput,
@@ -318,60 +316,41 @@ export const run = async ({
             const reviewResult = extractJSON(reviewRaw);
             const llmErrors = reviewResult?.errors || [];
 
-            // Merge errors (dedup by rule+component)
-            const allErrors = [...allDetErrors];
+            // Merge (dedup)
+            const allErrors = [...detErrors];
             for (const err of llmErrors) {
-                const isDup = allErrors.some(e => e.rule === err.rule && e.component === err.component && e.message === err.message);
+                const isDup = allErrors.some(e => e.rule === err.rule && e.component === err.component);
                 if (!isDup) allErrors.push(err);
             }
 
             const criticalErrors = allErrors.filter(e => e.severity === 'critical');
 
-            const iterationLog = {
+            history.push({
                 iteration: totalIterations,
                 metaRound: metaRound + 1,
-                deterministicErrors: allDetErrors,
+                deterministicErrors: detErrors,
                 llmErrors,
                 totalErrors: allErrors.length,
-                criticalErrors: criticalErrors.length,
-                flow: currentFlow
-            };
-            history.push(iterationLog);
+                criticalErrors: criticalErrors.length
+            });
             roundErrors.push(...allErrors);
 
             // All clear?
             if (criticalErrors.length === 0) {
-                console.log(chalk.green(`\n✅ Flow passed all validations after ${totalIterations} iterations!`));
-
-                // Save final result
-                const logPath = path.join(LOGS_DIR, `run-${Date.now()}.json`);
-                fs.writeFileSync(logPath, JSON.stringify({ history, result: currentFlow }, null, 2));
-
-                return {
-                    flowJson: currentFlow,
-                    iterations: totalIterations,
-                    metaRounds: metaRound,
-                    history,
-                    success: true
-                };
+                console.log(`\n✅ Flow passed after ${totalIterations} iterations!`);
+                saveLog({ history, result: currentFlow });
+                return { flowJson: currentFlow, iterations: totalIterations, metaRounds: metaRound, history, success: true };
             }
 
-            console.log(chalk.red(`${criticalErrors.length} critical errors. Sending to generator for fix...`));
+            console.log(`  ❌ ${criticalErrors.length} critical errors → generator fix...`);
 
-            // Step 3: Generator fixes
+            // Step 3: Generator fix
             const generatorPrompt = readPrompt('generator-system');
-            const fixInput = `Fix the following E2E test flow. Here are the errors found by the reviewer:
+            const fixInput = `Fix this E2E test flow. Errors found:\n\n${JSON.stringify(allErrors, null, 2)}\n\nCurrent flow:\n${JSON.stringify(currentFlow, null, 2)}` +
+                (connectorContext ? `\n\nComponent schemas:\n${connectorContext}` : '') +
+                '\n\nFix ALL errors. Return ONLY the complete corrected flow JSON.';
 
-${JSON.stringify(allErrors, null, 2)}
-
-Current flow JSON:
-${JSON.stringify(currentFlow, null, 2)}
-
-${connectorContext ? `Component schemas for reference:\n${connectorContext}` : ''}
-
-Fix ALL errors and return the complete corrected flow JSON.`;
-
-            console.log(chalk.yellow('Running generator fix...'));
+            console.log('  🔧 Generator fixing...');
             const fixRaw = await runLLM({
                 systemPrompt: generatorPrompt,
                 userPrompt: fixInput,
@@ -382,15 +361,15 @@ Fix ALL errors and return the complete corrected flow JSON.`;
             const fixedFlow = extractJSON(fixRaw);
             if (fixedFlow && fixedFlow.flow) {
                 currentFlow = fixedFlow;
-                console.log(chalk.green('Generator produced fixed flow.'));
+                console.log('  ✅ Generator produced fixed flow');
             } else {
-                console.log(chalk.red('Generator failed to produce valid JSON. Retrying...'));
+                console.log('  ⚠️  Generator failed to produce valid JSON, retrying...');
             }
         }
 
-        // Step 4: Meta-improvement — iterations exhausted
+        // Step 4: Meta-improvement
         if (metaRound < maxMetaRounds - 1) {
-            console.log(chalk.magenta(`\n🔧 Meta-improvement round ${metaRound + 1}...`));
+            console.log(`\n🧠 Meta-improvement round ${metaRound + 1}...`);
 
             const metaPrompt = readPrompt('meta-improver-system');
             const currentGeneratorPrompt = readPrompt('generator-system');
@@ -404,28 +383,10 @@ Fix ALL errors and return the complete corrected flow JSON.`;
                 errorSummary[key].count++;
             }
 
-            const metaInput = `## Current Generator Prompt
-${currentGeneratorPrompt}
-
-## Current Reviewer Prompt
-${currentReviewerPrompt}
-
-## Error History (${roundErrors.length} total errors across ${maxIterations} iterations)
-
-### Error Pattern Summary
-${Object.values(errorSummary)
-    .sort((a, b) => b.count - a.count)
-    .map(e => `- **${e.rule}** (${e.severity}, ${e.count}x): ${e.message}`)
-    .join('\n')}
-
-### Full Iteration History
-${history.slice(-maxIterations).map((h, i) =>
-    `Iteration ${i + 1}: ${h.totalErrors} errors (${h.criticalErrors} critical)\n${
-        [...h.deterministicErrors, ...h.llmErrors].map(e => `  - [${e.severity}] ${e.rule}: ${e.message}`).join('\n')
-    }`
-).join('\n\n')}
-
-Analyze the patterns and improve both prompts to prevent these recurring errors.`;
+            const metaInput = `## Current Generator Prompt\n${currentGeneratorPrompt}\n\n## Current Reviewer Prompt\n${currentReviewerPrompt}\n\n## Error Summary (${roundErrors.length} total across ${maxIterations} iterations)\n${
+                Object.values(errorSummary).sort((a, b) => b.count - a.count)
+                    .map(e => `- **${e.rule}** (${e.severity}, ${e.count}x): ${e.message}`).join('\n')
+            }\n\nImprove both prompts to prevent these recurring errors.`;
 
             const metaRaw = await runLLM({
                 systemPrompt: metaPrompt,
@@ -438,38 +399,32 @@ Analyze the patterns and improve both prompts to prevent these recurring errors.
             if (metaResult) {
                 if (metaResult.generator_prompt) {
                     writePrompt('generator-system', metaResult.generator_prompt);
-                    console.log(chalk.magenta('✏️  Updated generator prompt'));
+                    console.log('  ✏️  Updated generator prompt');
                 }
                 if (metaResult.reviewer_prompt) {
                     writePrompt('reviewer-system', metaResult.reviewer_prompt);
-                    console.log(chalk.magenta('✏️  Updated reviewer prompt'));
+                    console.log('  ✏️  Updated reviewer prompt');
                 }
                 if (metaResult.changes) {
-                    console.log(chalk.magenta('Changes:'));
-                    metaResult.changes.forEach(c => console.log(chalk.magenta(`  • ${c}`)));
-                }
-                if (metaResult.analysis) {
-                    console.log(chalk.magenta(`Analysis: ${metaResult.analysis}`));
+                    metaResult.changes.forEach(c => console.log(`  • ${c}`));
                 }
             } else {
-                console.log(chalk.red('Meta-improver failed to produce valid output.'));
+                console.log('  ⚠️  Meta-improver failed to produce valid output');
             }
         }
     }
 
-    // Exhausted all meta rounds
-    console.log(chalk.red(`\n❌ Failed to produce valid flow after ${totalIterations} iterations and ${maxMetaRounds} meta rounds.`));
+    console.log(`\n❌ Failed after ${totalIterations} iterations and ${maxMetaRounds} meta rounds.`);
+    saveLog({ history, lastFlow: currentFlow, success: false });
 
-    const logPath = path.join(LOGS_DIR, `run-failed-${Date.now()}.json`);
-    fs.writeFileSync(logPath, JSON.stringify({ history, lastFlow: currentFlow }, null, 2));
+    return { flowJson: currentFlow, iterations: totalIterations, metaRounds: maxMetaRounds, history, success: false };
+};
 
-    return {
-        flowJson: currentFlow,
-        iterations: totalIterations,
-        metaRounds: maxMetaRounds,
-        history,
-        success: false
-    };
+const saveLog = (data) => {
+    ensureDir(LOGS_DIR);
+    const logPath = path.join(LOGS_DIR, `run-${Date.now()}.json`);
+    fs.writeFileSync(logPath, JSON.stringify(data, null, 2));
+    console.log(`  📝 Log saved: ${logPath}`);
 };
 
 export default { run };
