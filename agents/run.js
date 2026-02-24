@@ -41,9 +41,10 @@ const result = await run({
     maxIterations: parseInt(getArg('max-iterations', '5')),
     maxMetaRounds: parseInt(getArg('max-meta-rounds', '3')),
     generatorModel: getArg('generator-model', 'sonnet'),
-    reviewerModel: getArg('reviewer-model', 'sonnet'),
+    reviewerModel: getArg('reviewer-model', 'haiku'),
     metaModel: getArg('meta-model', 'sonnet'),
-    connectorContext: getArg('context', null) ? fs.readFileSync(getArg('context', ''), 'utf-8') : ''
+    connectorContext: getArg('context', null) ? fs.readFileSync(getArg('context', ''), 'utf-8') : '',
+    connectorsDir: getArg('connectors-dir', '')
 });
 
 const outputPath = getArg('output', flowPath);

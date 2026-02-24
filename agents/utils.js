@@ -2,6 +2,9 @@
  * Shared utilities for the self-improving test flow agent.
  */
 
+import fs from 'fs';
+import path from 'path';
+
 export const extractJSON = (text) => {
     for (const match of text.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)) {
         try { return JSON.parse(match[1].trim()); } catch { /* continue */ }
@@ -104,17 +107,20 @@ export const deterministicValidation = (flowJson) => {
                 }
             }
 
-            // Variable path → source.in check
+            // Variable path → check referenced component exists in flow
+            // NOTE: We only check existence, NOT source.in membership.
+            // In Appmixer, modifier variables can reference any upstream component,
+            // not just those in source.in. source.in controls execution order, not data access.
+            const allComponentIds = Object.keys(components);
             const checkPaths = (obj) => {
                 if (!obj || typeof obj !== 'object') return;
                 if (obj.variable && typeof obj.variable === 'string') {
                     const match = obj.variable.match(/^\$\.([^.]+)\./);
                     if (match) {
                         const ref = match[1];
-                        const compSrcs = Object.keys(comp.source?.in || {});
-                        if (!compSrcs.includes(ref) && ref !== compId) {
+                        if (ref !== compId && !allComponentIds.includes(ref)) {
                             errors.push({ severity: 'critical', component: compId, rule: 'variable-path',
-                                message: `Variable "${obj.variable}" references "${ref}" not in source.in` });
+                                message: `Variable "${obj.variable}" references "${ref}" which doesn't exist in the flow` });
                         }
                     }
                 }
@@ -145,6 +151,179 @@ export const deterministicValidation = (flowJson) => {
                 if (!resultLambda || !resultLambda.includes(`{{{${varId}}}}`)) {
                     errors.push({ severity: 'critical', component: procId, rule: 'process-result',
                         message: `ProcessE2EResults result should be "{{{${varId}}}}" but got "${resultLambda}"` });
+                }
+            }
+        }
+    }
+
+    return errors;
+};
+
+// --- Component schema loading ---
+
+/**
+ * Load component.json for a given component type.
+ * @param {string} componentType - e.g. 'appmixer.axiom.datasets.CreateDataset'
+ * @param {string} connectorsDir - path to appmixer-connectors/src
+ * @returns {Object|null} parsed component.json or null
+ */
+export const loadComponentSchema = (componentType, connectorsDir) => {
+    // appmixer.axiom.datasets.CreateDataset → appmixer/axiom/datasets/CreateDataset
+    const parts = componentType.split('.');
+    const componentPath = path.join(connectorsDir, ...parts, 'component.json');
+    try {
+        return JSON.parse(fs.readFileSync(componentPath, 'utf-8'));
+    } catch {
+        return null;
+    }
+};
+
+/**
+ * Get input schema fields from component.json
+ * @returns {{ properties: Object, required: string[] }}
+ */
+export const getInputSchema = (componentJson) => {
+    const inPort = componentJson?.inPorts?.[0];
+    const schema = inPort?.schema || {};
+    return {
+        properties: schema.properties || {},
+        required: schema.required || []
+    };
+};
+
+// --- Input coverage validation ---
+
+const GENERIC_VALUES = new Set([
+    '', 'test', 'string', 'value', 'example', 'foo', 'bar', 'baz',
+    'undefined', 'null', 'none', 'n/a', 'todo', 'placeholder', 'xxx', 'abc', '123'
+]);
+
+const UTIL_COMPONENT_PREFIXES = [
+    'appmixer.utils.controls.',
+    'appmixer.utils.test.',
+];
+
+/**
+ * Validate input coverage and data quality against component schemas.
+ * @param {Object} flowJson - the flow
+ * @param {string} connectorsDir - path to appmixer-connectors/src
+ * @returns {Array} errors
+ */
+export const inputCoverageValidation = (flowJson, connectorsDir) => {
+    const errors = [];
+    if (!flowJson.flow || !connectorsDir) return errors;
+
+    for (const [compId, comp] of Object.entries(flowJson.flow)) {
+        const type = comp.type || '';
+
+        // Skip utility components
+        if (UTIL_COMPONENT_PREFIXES.some(p => type.startsWith(p))) continue;
+        if (!type.startsWith('appmixer.')) continue;
+
+        const componentJson = loadComponentSchema(type, connectorsDir);
+        if (!componentJson) continue;
+
+        const { properties: schemaProps, required: requiredFields } = getInputSchema(componentJson);
+        const schemaFieldNames = Object.keys(schemaProps);
+        if (schemaFieldNames.length === 0) continue;
+
+        // Collect fields actually used in the flow for this component
+        const usedFields = new Set();
+        const transform = comp.config?.transform?.in || {};
+        for (const sourceConfig of Object.values(transform)) {
+            const lambda = sourceConfig?.out?.lambda || {};
+            for (const fieldName of Object.keys(lambda)) {
+                usedFields.add(fieldName);
+            }
+        }
+
+        // Check required fields are covered
+        for (const field of requiredFields) {
+            if (!usedFields.has(field)) {
+                errors.push({
+                    severity: 'critical',
+                    component: compId,
+                    rule: 'input-coverage-required',
+                    message: `Required field "${field}" is not provided (schema: ${type})`
+                });
+            }
+        }
+
+        // Check optional fields coverage (warning, not critical)
+        const optionalFields = schemaFieldNames.filter(f => !requiredFields.includes(f));
+        const missingOptional = optionalFields.filter(f => !usedFields.has(f));
+        if (missingOptional.length > 0) {
+            errors.push({
+                severity: 'warning',
+                component: compId,
+                rule: 'input-coverage-optional',
+                message: `Optional fields not tested: [${missingOptional.join(', ')}] (${missingOptional.length}/${schemaFieldNames.length} missing)`
+            });
+        }
+
+        // Check for unknown fields (not in schema)
+        for (const field of usedFields) {
+            if (!schemaFieldNames.includes(field)) {
+                errors.push({
+                    severity: 'critical',
+                    component: compId,
+                    rule: 'unknown-field',
+                    message: `Field "${field}" is not defined in component schema. Available: [${schemaFieldNames.join(', ')}]`
+                });
+            }
+        }
+
+        // Check data quality — look for generic/meaningless values in lambda
+        for (const sourceConfig of Object.values(transform)) {
+            const lambda = sourceConfig?.out?.lambda || {};
+            for (const [fieldName, value] of Object.entries(lambda)) {
+                if (typeof value !== 'string') continue;
+                // Skip template references like {{{var}}}
+                if (value.includes('{{{')) continue;
+
+                const trimmed = value.trim().toLowerCase();
+                if (GENERIC_VALUES.has(trimmed)) {
+                    errors.push({
+                        severity: 'warning',
+                        component: compId,
+                        rule: 'meaningless-data',
+                        message: `Field "${fieldName}" has generic/empty value "${value}". Use realistic test data.`
+                    });
+                }
+
+                // Check enum compliance
+                const fieldSchema = schemaProps[fieldName];
+                if (fieldSchema?.enum && !value.includes('{{{')) {
+                    if (!fieldSchema.enum.includes(value)) {
+                        errors.push({
+                            severity: 'critical',
+                            component: compId,
+                            rule: 'invalid-enum',
+                            message: `Field "${fieldName}" value "${value}" not in enum: [${fieldSchema.enum.join(', ')}]`
+                        });
+                    }
+                }
+
+                // Check type compliance for obvious cases
+                if (fieldSchema?.type === 'integer' && !value.includes('{{{')) {
+                    if (!/^-?\d+$/.test(value)) {
+                        errors.push({
+                            severity: 'warning',
+                            component: compId,
+                            rule: 'type-mismatch',
+                            message: `Field "${fieldName}" expects integer but got "${value}"`
+                        });
+                    }
+                }
+                if (fieldSchema?.type === 'boolean' && !value.includes('{{{')) {
+                    if (!['true', 'false'].includes(trimmed)) {
+                        errors.push({
+                            severity: 'warning',
+                            component: compId,
+                            rule: 'type-mismatch',
+                            message: `Field "${fieldName}" expects boolean but got "${value}"`
+                        });
+                    }
                 }
             }
         }

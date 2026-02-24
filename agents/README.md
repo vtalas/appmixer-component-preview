@@ -5,29 +5,30 @@ Generates, validates, and iteratively fixes Appmixer E2E test flows using a mult
 ## How It Works
 
 ```
-┌─────────────┐     ┌──────────┐     ┌───────────┐
-│  Deterministic│────▶│ LLM      │────▶│ Generator │──┐
+┌───────────────┐     ┌───────────┐     ┌───────────┐
+│  Deterministic│────▶│ LLM       │────▶│ Generator │──┐
 │  Validation   │     │ Reviewer  │     │ (fixer)   │  │
-└─────────────┘     └──────────┘     └───────────┘  │
-       ▲                                              │
-       └──────────────────────────────────────────────┘
+└───────────────┘     └───────────┘     └───────────┘  │
+       ▲                                               │
+       └───────────────────────────────────────────────┘
                     repeat max N times
                           │
                    after N failures
                           ▼
-                 ┌─────────────────┐
-                 │  Meta-Improver   │
-                 │  edits prompts/  │
-                 │  generator-system│
-                 │  reviewer-system │
-                 └─────────────────┘
+                 ┌───────────────────┐
+                 │  Meta-Improver    │
+                 │  edits prompts/   │
+                 │  generator-system │
+                 │  reviewer-system  │
+                 └───────────────────┘
 ```
 
 1. **Deterministic validation** — checks variable mapping, source connections, AfterAll wiring, ProcessE2EResults config (no LLM needed)
-2. **LLM Review** — a different model checks semantics, logic, field names vs component.json
-3. **Generator fix** — receives all errors, outputs corrected flow JSON
-4. **Repeat** up to `--max-iterations` times (default: 5)
-5. **Meta-improver** — after exhausting iterations, analyzes error patterns and **edits the prompt files** in `prompts/` to prevent recurring mistakes. Then reruns the loop with improved prompts.
+2. **Input coverage validation** — compares flow fields against component.json schemas, checks required fields, enum values, data quality (requires `--connectors-dir`)
+3. **LLM Review** — a different model (haiku by default) checks semantics, logic, field names
+4. **Generator fix** — receives all errors, outputs corrected flow JSON
+5. **Repeat** up to `--max-iterations` times (default: 5)
+6. **Meta-improver** — after exhausting iterations, analyzes error patterns and **edits the prompt files** in `prompts/` to prevent recurring mistakes. Then reruns the loop with improved prompts.
 
 ## Requirements
 
@@ -48,8 +49,13 @@ cd /Users/vladimir/Projects/appmixer-component-preview
 # Basic — fix a flow with defaults (5 iterations, 3 meta rounds, sonnet model)
 node agents/run.js path/to/test-flow.json
 
+# With component schema validation (recommended)
+node agents/run.js path/to/test-flow.json \
+  --connectors-dir /Users/vladimir/Projects/appmixer-connectors/src
+
 # Custom models and limits
 node agents/run.js path/to/test-flow.json \
+  --connectors-dir /Users/vladimir/Projects/appmixer-connectors/src \
   --max-iterations 5 \
   --max-meta-rounds 3 \
   --generator-model sonnet \
@@ -67,12 +73,13 @@ node agents/run.js path/to/test-flow.json --context path/to/copilot-instructions
 
 | Option | Default | Description |
 |--------|---------|-------------|
+| `--connectors-dir PATH` | — | Path to `appmixer-connectors/src` for schema validation |
 | `--max-iterations N` | 5 | Generate→review cycles per meta round |
 | `--max-meta-rounds N` | 3 | How many times meta-improver rewrites prompts |
 | `--generator-model M` | sonnet | Model for fixing flows |
-| `--reviewer-model M` | sonnet | Model for reviewing (use different model for diversity) |
+| `--reviewer-model M` | haiku | Model for reviewing (fast; use opus for thorough review) |
 | `--meta-model M` | sonnet | Model for prompt improvement |
-| `--context PATH` | — | File with connector context (component schemas, instructions) |
+| `--context PATH` | — | File with connector context (instructions, notes) |
 | `--output PATH` | input file | Where to write the result |
 
 ### Recommended Configurations
@@ -95,6 +102,8 @@ agents/
 ├── README.md                          ← you are here
 ├── run.js                             ← CLI runner
 ├── selfImprovingTestFlowAgent.js      ← main orchestrator
+├── utils.js                           ← shared validation logic (deterministicValidation, inputCoverageValidation, extractJSON)
+├── test.js                            ← tests (node --test agents/test.js)
 ├── prompts/
 │   ├── generator-system.md            ← system prompt for flow fixer (editable by meta-improver)
 │   ├── reviewer-system.md             ← system prompt for reviewer (editable by meta-improver)
@@ -144,12 +153,19 @@ if (result.success) {
 - Required components (OnStart, AfterAll, ProcessE2EResults)
 - All Assert components connected to AfterAll's `source.in`
 - Variable mapping: every modifier has matching `{{{varId}}}` in lambda
-- Source connections: referenced components exist in `source.in`
-- Variable paths: `$.component-id.out.field` → component-id must be in source.in
+- Source connections: transform references exist in `source.in`
+- Variable paths: `$.component-id.out.field` → component-id must exist in flow
 - ProcessE2EResults: successStoreId, failedStoreId, result mapping
 
-### LLM Review (semantic)
-- Field names match actual component.json schemas
+### Input Coverage (requires `--connectors-dir`, instant)
+- Required fields from component.json are provided
+- No unknown fields (not in schema)
+- Enum values match allowed values
+- Type compliance (integer, boolean)
+- Warns about untested optional fields
+- Warns about generic/meaningless data ("test", "", "foo"...)
+
+### LLM Review (semantic, haiku by default)
 - CRUD operation sequence makes logical sense
 - Assert expressions test meaningful values
 - Data flow is complete (no missing intermediate steps)

@@ -12,7 +12,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { extractJSON, deterministicValidation } from './utils.js';
+import { extractJSON, deterministicValidation, inputCoverageValidation } from './utils.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -83,9 +83,10 @@ export const run = async ({
     maxIterations = 5,
     maxMetaRounds = 3,
     generatorModel = 'sonnet',
-    reviewerModel = 'sonnet',
+    reviewerModel = 'haiku',
     metaModel = 'sonnet',
-    connectorContext = ''
+    connectorContext = '',
+    connectorsDir = ''
 }) => {
     ensureDir(LOGS_DIR);
 
@@ -105,18 +106,27 @@ export const run = async ({
             // Step 1: Deterministic validation
             const detErrors = deterministicValidation(currentFlow);
 
-            if (detErrors.length > 0) {
-                console.log(`  ❌ Deterministic: ${detErrors.length} errors`);
-                detErrors.forEach(e => console.log(`    [${e.severity}] ${e.rule}: ${e.message}`));
+            // Step 1b: Input coverage validation (if connectorsDir provided)
+            const coverageErrors = connectorsDir ? inputCoverageValidation(currentFlow, connectorsDir) : [];
+            const allDetErrors = [...detErrors, ...coverageErrors];
+
+            if (allDetErrors.length > 0) {
+                const critical = allDetErrors.filter(e => e.severity === 'critical');
+                const warnings = allDetErrors.filter(e => e.severity === 'warning');
+                if (critical.length) console.log(`  ❌ Validation: ${critical.length} critical errors`);
+                critical.forEach(e => console.log(`    [${e.rule}] ${e.component || 'flow'}: ${e.message}`));
+                if (warnings.length) console.log(`  ⚠️  Validation: ${warnings.length} warnings`);
+                warnings.forEach(e => console.log(`    [${e.rule}] ${e.component || 'flow'}: ${e.message}`));
+                if (critical.length === 0) console.log('  ✅ Validation: no critical errors');
             } else {
-                console.log('  ✅ Deterministic: PASSED');
+                console.log('  ✅ Validation: PASSED');
             }
 
             // Step 2: LLM Review
             const reviewerPrompt = readPrompt('reviewer-system');
             const reviewInput = `Review this E2E test flow JSON:\n\n${JSON.stringify(currentFlow, null, 2)}` +
                 (connectorContext ? `\n\nComponent schemas:\n${connectorContext}` : '') +
-                (detErrors.length > 0 ? `\n\nDeterministic validation found:\n${JSON.stringify(detErrors, null, 2)}` : '');
+                (allDetErrors.length > 0 ? `\n\nDeterministic validation found:\n${JSON.stringify(allDetErrors, null, 2)}` : '');
 
             console.log('  🔍 LLM review...');
             const reviewRaw = await runLLM({
@@ -130,7 +140,7 @@ export const run = async ({
             const llmErrors = reviewResult?.errors || [];
 
             // Merge (dedup)
-            const allErrors = [...detErrors];
+            const allErrors = [...allDetErrors];
             for (const err of llmErrors) {
                 const isDup = allErrors.some(e => e.rule === err.rule && e.component === err.component);
                 if (!isDup) allErrors.push(err);
@@ -141,7 +151,7 @@ export const run = async ({
             history.push({
                 iteration: totalIterations,
                 metaRound: metaRound + 1,
-                deterministicErrors: detErrors,
+                deterministicErrors: allDetErrors,
                 llmErrors,
                 totalErrors: allErrors.length,
                 criticalErrors: criticalErrors.length
@@ -156,6 +166,7 @@ export const run = async ({
             }
 
             console.log(`  ❌ ${criticalErrors.length} critical errors → generator fix...`);
+            criticalErrors.forEach(e => console.log(`    [${e.rule}] ${e.component || 'flow'}: ${e.message}`));
 
             // Step 3: Generator fix
             const generatorPrompt = readPrompt('generator-system');
