@@ -239,7 +239,8 @@ export const run = async ({
     generatorModel = 'sonnet',
     reviewerModel = 'haiku',
     metaModel = 'opus',
-    connectorsDir = ''
+    connectorsDir = '',
+    upload = false
 }) => {
     ensureDir(LOGS_DIR);
 
@@ -252,6 +253,7 @@ export const run = async ({
     console.log(`   Models: generator=${generatorModel}, reviewer=${reviewerModel}, meta=${metaModel}`);
     console.log(`   Limits: ${maxIterations} iterations × ${maxMetaRounds} meta rounds`);
     if (connectorsDir) console.log(`   Connectors: ${connectorsDir}`);
+    if (upload) console.log(`   Upload: enabled (will upload to Appmixer on success)`);
 
     for (let metaRound = 0; metaRound < maxMetaRounds; metaRound++) {
         console.log(`\n${'═'.repeat(60)}`);
@@ -294,8 +296,43 @@ export const run = async ({
             if (criticalErrors.length === 0) {
                 console.log(`\n✅ Flow passed all validations after ${totalIterations} iteration(s)!`);
                 if (warnings.length) console.log(`   (${warnings.length} non-critical warnings remain)`);
+
+                // Upload to server if requested
+                let uploadResult = null;
+                let serverResult = null;
+                if (upload) {
+                    try {
+                        uploadResult = await uploadFlow(currentFlow);
+
+                        // Server-side validate + attempt start
+                        serverResult = await serverValidateAndStart(uploadResult.flowId);
+
+                        if (serverResult.status === 'fixable') {
+                            // Server found fixable errors — feed them back to generator
+                            console.log('\n  🔄 Server found fixable errors, sending to generator...');
+                            const serverErrors = serverResult.fixable.map(e => ({
+                                severity: 'critical',
+                                component: e.componentId,
+                                rule: `server-${e.keyword}`,
+                                message: `Server validation: ${e.message} (${e.descriptorPath})`
+                            }));
+
+                            // Don't break out — continue the iteration loop with server errors
+                            const fixed = await fix(currentFlow, serverErrors, generatorModel);
+                            if (fixed) {
+                                currentFlow = fixed;
+                                // Re-upload fixed version
+                                uploadResult = await uploadFlow(currentFlow);
+                                serverResult = await serverValidateAndStart(uploadResult.flowId);
+                            }
+                        }
+                    } catch (e) {
+                        console.log(`  ❌ Upload/server error: ${e.message}`);
+                    }
+                }
+
                 saveLog({ history, result: currentFlow });
-                return { flowJson: currentFlow, iterations: totalIterations, metaRounds: metaRound, history, success: true };
+                return { flowJson: currentFlow, iterations: totalIterations, metaRounds: metaRound, history, success: true, uploadResult, serverResult };
             }
 
             // 5. Generator fix

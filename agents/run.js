@@ -44,7 +44,8 @@ const result = await run({
     generatorModel: getArg('generator-model', 'sonnet'),
     reviewerModel: getArg('reviewer-model', 'haiku'),
     metaModel: getArg('meta-model', 'sonnet'),
-    connectorsDir: getArg('connectors-dir', process.env.CONNECTORS_DIR || '')
+    connectorsDir: getArg('connectors-dir', process.env.CONNECTORS_DIR || ''),
+    upload: args.includes('--upload')
 });
 
 const outputPath = getArg('output', flowPath);

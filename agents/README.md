@@ -79,6 +79,7 @@ node agents/run.js path/to/test-flow.json --output /tmp/fixed-flow.json
 | `--reviewer-model M` | haiku | Model for reviewing (fast; use opus for thorough review) |
 | `--meta-model M` | sonnet | Model for prompt improvement |
 | `--output PATH` | input file | Where to write the result |
+| `--upload` | off | Upload to Appmixer server on success, validate + start |
 
 ### Recommended Configurations
 
@@ -91,6 +92,9 @@ node agents/run.js flow.json --reviewer-model opus --meta-model opus
 
 # Quick test (1 round, 3 iterations)
 node agents/run.js flow.json --max-iterations 3 --max-meta-rounds 1
+
+# Full pipeline: validate → fix → upload → server validate → start
+node agents/run.js flow.json --upload
 ```
 
 ## Project Structure
@@ -170,6 +174,16 @@ if (result.success) {
 - CRUD operation sequence makes logical sense
 - Assert expressions test meaningful values
 - Data flow is complete (no missing intermediate steps)
+
+### Server-side (with `--upload`)
+After local validation passes, the flow is uploaded to Appmixer and validated server-side:
+- Schema validation of properties and inputs
+- Invalid variable references (components that no longer exist)
+- Missing component manifests
+
+Errors are classified as:
+- **Fixable** → sent back to generator for another fix attempt
+- **Human required** (auth, missing components) → agent stops, prints instructions
 
 ## Logs
 

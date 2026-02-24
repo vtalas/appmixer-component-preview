@@ -64,7 +64,9 @@
 		githubModified: localMergedFlows().filter(f => f.githubSyncStatus === 'modified').length,
 		localOnly: localMergedFlows().filter(f => f.githubSyncStatus === 'local_only').length,
 		onAppmixer: localMergedFlows().filter(f => f.appmixerSyncStatus && f.appmixerSyncStatus !== 'local_only').length,
-		notOnAppmixer: localMergedFlows().filter(f => !f.appmixerSyncStatus || f.appmixerSyncStatus === 'local_only').length
+		notOnAppmixer: localMergedFlows().filter(f => !f.appmixerSyncStatus || f.appmixerSyncStatus === 'local_only').length,
+		gitClean: localMergedFlows().filter(f => f.gitStatus === 'clean').length,
+		gitDirty: localMergedFlows().filter(f => f.gitStatus && f.gitStatus !== 'clean').length
 	});
 
 	// ===== Appmixer tab filters =====
@@ -87,15 +89,18 @@
 
 	// ===== Local tab filters =====
 	let localSearch = $state('');
+	let localGitFilter = $state('');
 	let localGithubSyncFilter = $state('');
 	let localAppmixerSyncFilter = $state('');
 
 	let localFilteredFlows = $derived(
 		localMergedFlows().filter(flow => {
 			const matchSearch = !localSearch || flow.name?.toLowerCase().includes(localSearch.toLowerCase());
+			const matchGit = !localGitFilter ||
+				(localGitFilter === 'dirty' ? (flow.gitStatus && flow.gitStatus !== 'clean') : flow.gitStatus === localGitFilter);
 			const matchGithub = !localGithubSyncFilter || flow.githubSyncStatus === localGithubSyncFilter;
 			const matchAppmixer = !localAppmixerSyncFilter || flow.appmixerSyncStatus === localAppmixerSyncFilter;
-			return matchSearch && matchGithub && matchAppmixer;
+			return matchSearch && matchGit && matchGithub && matchAppmixer;
 		})
 	);
 
@@ -506,6 +511,13 @@
 		error: { label: 'Error', cls: 'sync-badge-error' }
 	};
 
+	const gitStatusConfig = {
+		clean: { label: 'Clean', cls: 'sync-badge-match' },
+		modified: { label: 'Modified', cls: 'sync-badge-modified' },
+		added: { label: 'Added', cls: 'sync-badge-server-only' },
+		untracked: { label: 'Untracked', cls: 'sync-badge-local-only' }
+	};
+
 	// --- Data loading ---
 	async function loadSettings() {
 		try {
@@ -879,9 +891,18 @@
 
 		<!-- Stats bar -->
 		<div class="e2e-stats-bar">
-			<button class="e2e-stat" class:active={!localGithubSyncFilter && !localAppmixerSyncFilter} onclick={() => { localGithubSyncFilter = ''; localAppmixerSyncFilter = ''; }}>
+			<button class="e2e-stat" class:active={!localGitFilter && !localGithubSyncFilter && !localAppmixerSyncFilter} onclick={() => { localGitFilter = ''; localGithubSyncFilter = ''; localAppmixerSyncFilter = ''; }}>
 				<span class="e2e-stat-value">{localStats.total}</span>
 				<span class="e2e-stat-label">Total</span>
+			</button>
+			<span class="e2e-stat-divider"></span>
+			<button class="e2e-stat stat-match" class:active={localGitFilter === 'clean'} onclick={() => localGitFilter = localGitFilter === 'clean' ? '' : 'clean'}>
+				<span class="e2e-stat-value">{localStats.gitClean}</span>
+				<span class="e2e-stat-label">Git Clean</span>
+			</button>
+			<button class="e2e-stat stat-modified" class:active={localGitFilter === 'dirty'} onclick={() => localGitFilter = localGitFilter === 'dirty' ? '' : 'dirty'}>
+				<span class="e2e-stat-value">{localStats.gitDirty}</span>
+				<span class="e2e-stat-label">Git Dirty</span>
 			</button>
 			<span class="e2e-stat-divider"></span>
 			<button class="e2e-stat stat-match" class:active={localGithubSyncFilter === 'match'} onclick={() => localGithubSyncFilter = localGithubSyncFilter === 'match' ? '' : 'match'}>
@@ -913,6 +934,14 @@
 		<!-- Filter bar -->
 		<div class="e2e-filter-bar">
 			<input type="text" placeholder="Search flows..." bind:value={localSearch} class="e2e-search" />
+			<select bind:value={localGitFilter} class="e2e-select">
+				<option value="">All Git</option>
+				<option value="clean">Clean</option>
+				<option value="dirty">Dirty</option>
+				<option value="modified">Modified</option>
+				<option value="untracked">Untracked</option>
+				<option value="added">Added</option>
+			</select>
 			<select bind:value={localGithubSyncFilter} class="e2e-select">
 				<option value="">All GitHub Sync</option>
 				<option value="match">In Sync</option>
@@ -927,8 +956,8 @@
 				<option value="local_only">Not on Instance</option>
 				<option value="error">Error</option>
 			</select>
-			{#if localSearch || localGithubSyncFilter || localAppmixerSyncFilter}
-				<button class="e2e-clear-btn" onclick={() => { localSearch = ''; localGithubSyncFilter = ''; localAppmixerSyncFilter = ''; }}>Clear</button>
+			{#if localSearch || localGitFilter || localGithubSyncFilter || localAppmixerSyncFilter}
+				<button class="e2e-clear-btn" onclick={() => { localSearch = ''; localGitFilter = ''; localGithubSyncFilter = ''; localAppmixerSyncFilter = ''; }}>Clear</button>
 			{/if}
 			<span class="e2e-count">{localFilteredFlows.length} of {localMergedFlows().length} flows</span>
 		</div>
@@ -953,6 +982,7 @@
 							</th>
 							<th class="col-name">Flow Name</th>
 							<th class="col-status">Status</th>
+							<th class="col-sync">Git</th>
 							<th class="col-sync">GitHub Sync</th>
 							<th class="col-sync">Appmixer Sync</th>
 							<th class="col-actions">Actions</th>
@@ -1000,6 +1030,14 @@
 										</div>
 									{:else}
 										<span class="text-muted">---</span>
+									{/if}
+								</td>
+								<td class="col-sync">
+									{#if flow.gitStatus == null}
+										<span class="text-muted">---</span>
+									{:else}
+										{@const gs = gitStatusConfig[flow.gitStatus] || gitStatusConfig.clean}
+										<span class="sync-badge {gs.cls}">{gs.label}</span>
 									{/if}
 								</td>
 								<td class="col-sync">
