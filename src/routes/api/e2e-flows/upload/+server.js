@@ -1,6 +1,6 @@
 import { json, error } from '@sveltejs/kit';
 import { getConnectorsDir } from '$lib/server/state.js';
-import { updateFlow, createFlow } from '$lib/server/appmixer.js';
+import { updateFlow, createFlow, fetchE2EFlows } from '$lib/server/appmixer.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -15,6 +15,7 @@ export async function POST({ request }) {
         const fullPath = path.join(connectorsDir, localPath);
         if (!fs.existsSync(fullPath)) return error(404, `File not found: ${localPath}`);
 
+        // Always read the current version from disk
         const raw = fs.readFileSync(fullPath, 'utf-8');
         const content = JSON.parse(raw);
 
@@ -26,9 +27,23 @@ export async function POST({ request }) {
             content.customFields.category = 'E2E_test_flow';
         }
 
-        if (flowId) {
-            await updateFlow(flowId, content);
-            return json({ success: true, flowId, action: 'updated' });
+        // Auto-detect: if flowId not provided, check if this flow already exists on Appmixer by name
+        let resolvedFlowId = flowId;
+        if (!resolvedFlowId && content.name) {
+            try {
+                const existingFlows = await fetchE2EFlows();
+                const match = existingFlows.find(f => f.name === content.name);
+                if (match) {
+                    resolvedFlowId = match.flowId;
+                }
+            } catch (e) {
+                console.error('Failed to check existing flows, will create new:', e.message);
+            }
+        }
+
+        if (resolvedFlowId) {
+            await updateFlow(resolvedFlowId, content);
+            return json({ success: true, flowId: resolvedFlowId, action: 'updated' });
         } else {
             const result = await createFlow(content);
             return json({ success: true, flowId: result.flowId, action: 'created' });

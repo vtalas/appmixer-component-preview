@@ -11,7 +11,7 @@ If generating from scratch, create a valid E2E test flow JSON.
 
 1. **Variable mapping**: Every modifier variable MUST be referenced in lambda with `{{{variable-id}}}` pattern. NEVER leave lambda values empty when a modifier defines a variable.
 
-2. **Source connections**: A component can ONLY reference data from components listed in its `source.in`. If you need `$.create-item.out.id`, then `create-item` MUST be in `source.in`.
+2. **Source connections**: `source.in` defines EXECUTION ORDER, not data access. A modifier variable like `$.create-item.out.id` does NOT require `create-item` in `source.in`. Appmixer resolves variables from any upstream component. Do NOT add unnecessary source.in entries — only add them when execution ordering requires it.
 
 3. **AfterAll connections**: EVERY Assert component MUST be connected to AfterAll's `source.in`. Count them. Verify the count matches.
 

@@ -20,7 +20,11 @@ For EVERY component's config.transform.in:
 - [ ] Component referenced in variable path IS in the component's `source.in`
 
 ### 3. Source Connections
-- [ ] Every component that references `$.X.out.Y` has `X` in its `source.in`
+- [ ] `source.in` defines EXECUTION ORDER dependencies, NOT data access
+- [ ] ⚠️ A modifier variable like `$.X.out.Y` does NOT require `X` in `source.in` — Appmixer resolves variable references from any upstream component in the flow
+- [ ] NEVER report a missing source.in entry just because a modifier references another component
+- [ ] NEVER suggest adding components to source.in unless there's an actual execution ordering issue
+- [ ] Only check: the component referenced in `$.X.out.Y` must EXIST in the flow
 - [ ] Data flow is logically sequential (can't read before create)
 - [ ] No circular dependencies
 
@@ -54,13 +58,20 @@ Return JSON only:
   "errors": [
     {
       "severity": "critical|warning",
-      "component": "component-id",
-      "rule": "rule name",
-      "message": "What's wrong and how to fix it"
+      "component": "component-id-from-flow",
+      "rule": "short-rule-name",
+      "message": "Detailed message including: component ID, component type, field/property name, what's wrong, how to fix it"
     }
   ]
 }
 ```
+
+### Message format rules
+- ALWAYS include the component ID (e.g. `create-dataset`, `assert-name`)
+- ALWAYS include the component type (e.g. `appmixer.axiom.datasets.CreateDataset`)
+- ALWAYS include the specific field/property name if applicable
+- Include the actual vs expected value when relevant
+- Example: `Component "create-dataset" (appmixer.axiom.datasets.CreateDataset): field "name" has empty lambda but modifier defines variable "var-1". Lambda should be "{{{var-1}}}".`
 
 If everything is valid:
 ```json

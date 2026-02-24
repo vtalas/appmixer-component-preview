@@ -217,18 +217,19 @@
 		}
 	}
 
-	// Upload: Local → Instance
+	// Upload: Local → Instance (auto-detects create vs update on the server)
 	async function uploadFlow(flow) {
 		if (!flow.localPath) return;
-		const flowId = flow.flowId || flow.appmixerFlowId || undefined;
 		isUploading = new Set([...isUploading, flow.name]);
 		try {
 			const res = await fetch('/api/e2e-flows/upload', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ localPath: flow.localPath, flowId })
+				body: JSON.stringify({ localPath: flow.localPath })
 			});
 			if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || 'Failed to upload');
+			const result = await res.json();
+			console.log(`Flow "${flow.name}" ${result.action} (flowId: ${result.flowId})`);
 			// Reload flows first, then recompute sync statuses with fresh data
 			await Promise.all([loadFlows(), loadLocalFlows()]);
 			await Promise.all([loadSyncStatuses(), loadLocalSyncStatuses()]);
@@ -839,7 +840,7 @@
 										</button>
 										{#if flow.localSyncStatus != null}
 											<button
-												class="action-btn action-upload"
+												class="action-btn action-upload-update"
 												onclick={() => uploadFlow({ ...flow, localPath: flow.localPath })}
 												disabled={isUploading.has(flow.name)}
 												title="Upload from local (update)"
@@ -1021,7 +1022,7 @@
 									<div class="action-btns">
 										<!-- Upload to Appmixer (always available) -->
 										<button
-											class="action-btn action-upload"
+											class="action-btn {flow.appmixerFlowId ? 'action-upload-update' : 'action-upload-create'}"
 											onclick={() => uploadFlow(flow)}
 											disabled={isUploading.has(flow.name)}
 											title={flow.appmixerFlowId ? 'Upload to Appmixer (update)' : 'Upload to Appmixer (create)'}
@@ -1705,8 +1706,10 @@
 	.action-stop:hover { background: #fffbeb; }
 	.action-download { color: #2563eb; }
 	.action-download:hover { background: #eff6ff; }
-	.action-upload { color: #7c3aed; }
-	.action-upload:hover { background: #f5f3ff; }
+	.action-upload-create { color: #16a34a; }
+	.action-upload-create:hover { background: #f0fdf4; }
+	.action-upload-update { color: #d97706; }
+	.action-upload-update:hover { background: #fffbeb; }
 	.action-delete { color: #dc2626; }
 	.action-delete:hover { background: #fef2f2; }
 

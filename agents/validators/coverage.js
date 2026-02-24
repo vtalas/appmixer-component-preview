@@ -112,6 +112,50 @@ export const validateDataQuality = (compId, comp, schemaProps) => {
 };
 
 // ---------------------------------------------------------------------------
+// Assert coverage — components with output data should have asserts
+// ---------------------------------------------------------------------------
+
+const hasOutputData = (componentJson) => {
+    const outPort = componentJson?.outPorts?.[0];
+    return outPort?.options?.length > 0 || outPort?.schema?.properties;
+};
+
+export const validateAssertCoverage = (flowJson, connectorsDir) => {
+    const errors = [];
+    if (!flowJson.flow || !connectorsDir) return errors;
+
+    // Collect which components have asserts checking their output
+    const assertedComponents = new Set();
+    for (const comp of Object.values(flowJson.flow)) {
+        if (comp.type !== 'appmixer.utils.test.Assert') continue;
+        // Check what component this assert reads from (via source.in)
+        for (const srcId of Object.keys(comp.source?.in || {})) {
+            assertedComponents.add(srcId);
+        }
+        // Also check transform.in references
+        for (const srcId of Object.keys(comp.config?.transform?.in || {})) {
+            assertedComponents.add(srcId);
+        }
+    }
+
+    for (const [compId, comp] of Object.entries(flowJson.flow)) {
+        const type = comp.type || '';
+        if (UTIL_PREFIXES.some(p => type.startsWith(p))) continue;
+        if (!type.startsWith('appmixer.')) continue;
+
+        const schema = loadComponentSchema(type, connectorsDir);
+        if (!schema) continue;
+
+        if (hasOutputData(schema) && !assertedComponents.has(compId)) {
+            errors.push(error('warning', compId, 'missing-assert',
+                `Component "${compId}" (${type}) returns output data but has no Assert checking its results`));
+        }
+    }
+
+    return errors;
+};
+
+// ---------------------------------------------------------------------------
 // Compose all coverage validations
 // ---------------------------------------------------------------------------
 
@@ -140,6 +184,8 @@ export const inputCoverageValidation = (flowJson, connectorsDir) => {
             ...validateDataQuality(compId, comp, schemaProps),
         );
     }
+
+    errors.push(...validateAssertCoverage(flowJson, connectorsDir));
 
     return errors;
 };

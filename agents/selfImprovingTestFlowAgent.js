@@ -64,26 +64,28 @@ const runLLM = async ({ systemPrompt, userPrompt, model = 'sonnet', silent = fal
 const validate = (flow, connectorsDir) => {
     const structural = deterministicValidation(flow);
     const coverage = connectorsDir ? inputCoverageValidation(flow, connectorsDir) : [];
-    return [...structural, ...coverage];
+    return { structural, coverage, all: [...structural, ...coverage] };
 };
 
-const logValidationErrors = (errors) => {
+const logStepErrors = (label, errors) => {
     const critical = errors.filter(e => e.severity === 'critical');
     const warnings = errors.filter(e => e.severity === 'warning');
 
-    if (critical.length) {
-        console.log(`  ❌ ${critical.length} critical errors`);
-        critical.forEach(e => console.log(`    [${e.rule}] ${e.component || 'flow'}: ${e.message}`));
+    if (critical.length === 0 && warnings.length === 0) {
+        console.log(`  ✅ ${label}: passed`);
+    } else {
+        const parts = [];
+        if (critical.length) parts.push(`${critical.length} critical`);
+        if (warnings.length) parts.push(`${warnings.length} warnings`);
+        console.log(`  ${critical.length ? '❌' : '⚠️'}  ${label}: ${parts.join(', ')}`);
+        critical.forEach(e => console.log(`    ❌ [${e.rule}] ${e.component || 'flow'}: ${e.message}`));
+        warnings.forEach(e => console.log(`    ⚠️  [${e.rule}] ${e.component || 'flow'}: ${e.message}`));
     }
-    if (warnings.length) {
-        console.log(`  ⚠️  ${warnings.length} warnings`);
-        warnings.forEach(e => console.log(`    [${e.rule}] ${e.component || 'flow'}: ${e.message}`));
-    }
-    if (!critical.length && !warnings.length) {
-        console.log('  ✅ Validation: PASSED');
-    } else if (!critical.length) {
-        console.log('  ✅ No critical errors');
-    }
+};
+
+const logValidation = (result) => {
+    logStepErrors('Structural', result.structural);
+    logStepErrors('Coverage', result.coverage);
 };
 
 // ---------------------------------------------------------------------------
@@ -97,7 +99,19 @@ const review = async (flow, detErrors, model) => {
 
     console.log('  🔍 LLM review...');
     const raw = await runLLM({ systemPrompt: prompt, userPrompt: input, model, silent: true });
-    return extractJSON(raw)?.errors || [];
+    const result = extractJSON(raw);
+    const errors = result?.errors || [];
+
+    if (result?.ok) {
+        console.log('  ✅ LLM review: PASSED');
+    } else if (errors.length > 0) {
+        console.log(`  🔍 LLM review found ${errors.length} issues:`);
+        errors.forEach(e => console.log(`    [${e.severity}] ${e.rule}: ${e.message}`));
+    } else {
+        console.log('  ⚠️  LLM review: no parseable response');
+    }
+
+    return errors;
 };
 
 // ---------------------------------------------------------------------------
@@ -224,7 +238,7 @@ export const run = async ({
     maxMetaRounds = 3,
     generatorModel = 'sonnet',
     reviewerModel = 'haiku',
-    metaModel = 'sonnet',
+    metaModel = 'opus',
     connectorsDir = ''
 }) => {
     ensureDir(LOGS_DIR);
@@ -233,29 +247,43 @@ export const run = async ({
     let currentFlow = flowJson;
     let totalIterations = 0;
 
+    const componentCount = Object.keys(flowJson.flow || {}).length;
+    console.log(`\n📋 Flow: "${flowJson.name || 'unnamed'}" (${componentCount} components)`);
+    console.log(`   Models: generator=${generatorModel}, reviewer=${reviewerModel}, meta=${metaModel}`);
+    console.log(`   Limits: ${maxIterations} iterations × ${maxMetaRounds} meta rounds`);
+    if (connectorsDir) console.log(`   Connectors: ${connectorsDir}`);
+
     for (let metaRound = 0; metaRound < maxMetaRounds; metaRound++) {
-        console.log(`\n=== Meta Round ${metaRound + 1}/${maxMetaRounds} ===\n`);
+        console.log(`\n${'═'.repeat(60)}`);
+        console.log(`  Meta Round ${metaRound + 1}/${maxMetaRounds}`);
+        if (metaRound > 0) console.log('  (running with improved prompts from previous round)');
+        console.log(`${'═'.repeat(60)}`);
         const roundErrors = [];
 
         for (let iter = 0; iter < maxIterations; iter++) {
             totalIterations++;
-            console.log(`--- Iteration ${iter + 1}/${maxIterations} (total: ${totalIterations}) ---`);
+            console.log(`\n── Iteration ${iter + 1}/${maxIterations} (total: ${totalIterations}) ──`);
 
-            // 1. Validate
-            const detErrors = validate(currentFlow, connectorsDir);
-            logValidationErrors(detErrors);
+            // 1. Structural + coverage validation (deterministic, instant)
+            console.log('\n  [Step 1] Deterministic validation (structural rules + schema coverage)');
+            const validation = validate(currentFlow, connectorsDir);
+            logValidation(validation);
 
-            // 2. LLM Review
-            const llmErrors = await review(currentFlow, detErrors, reviewerModel);
+            // 2. LLM review (semantic check by a separate model)
+            console.log(`\n  [Step 2] LLM review (model: ${reviewerModel}, semantic analysis)`);
+            const llmErrors = await review(currentFlow, validation.all, reviewerModel);
 
-            // 3. Merge & evaluate
-            const allErrors = mergeErrors(detErrors, llmErrors);
+            // 3. Merge all errors and evaluate
+            const allErrors = mergeErrors(validation.all, llmErrors);
             const criticalErrors = allErrors.filter(e => e.severity === 'critical');
+            const warnings = allErrors.filter(e => e.severity === 'warning');
+
+            console.log(`\n  [Summary] ${criticalErrors.length} critical, ${warnings.length} warnings (${allErrors.length} total)`);
 
             history.push({
                 iteration: totalIterations,
                 metaRound: metaRound + 1,
-                detErrors: detErrors.length,
+                detErrors: validation.all.length,
                 llmErrors: llmErrors.length,
                 totalErrors: allErrors.length,
                 criticalErrors: criticalErrors.length
@@ -264,18 +292,22 @@ export const run = async ({
 
             // 4. Success?
             if (criticalErrors.length === 0) {
-                console.log(`\n✅ Flow passed after ${totalIterations} iterations!`);
+                console.log(`\n✅ Flow passed all validations after ${totalIterations} iteration(s)!`);
+                if (warnings.length) console.log(`   (${warnings.length} non-critical warnings remain)`);
                 saveLog({ history, result: currentFlow });
                 return { flowJson: currentFlow, iterations: totalIterations, metaRounds: metaRound, history, success: true };
             }
 
-            // 5. Fix
+            // 5. Generator fix
+            console.log(`\n  [Step 3] Generator fix (model: ${generatorModel}, fixing ${criticalErrors.length} critical errors)`);
             const fixed = await fix(currentFlow, allErrors, generatorModel);
             if (fixed) currentFlow = fixed;
         }
 
         // 6. Meta-improve (unless last round)
         if (metaRound < maxMetaRounds - 1) {
+            console.log(`\n  [Step 4] Meta-improvement (model: ${metaModel})`);
+            console.log('  Analyzing error patterns across all iterations to improve prompts...');
             await metaImprove(roundErrors, maxIterations, metaModel);
         }
     }
