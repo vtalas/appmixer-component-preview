@@ -5,13 +5,13 @@
  * After N failed iterations, invokes a meta-improver that edits
  * the generator and reviewer system prompts to reduce recurring errors.
  *
- * Uses Claude Code CLI (claude) — works with Claude Max subscription, no API key needed.
+ * Uses @anthropic-ai/claude-agent-sdk — works with Claude Max subscription.
  */
 
+import { query } from '@anthropic-ai/claude-agent-sdk';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { execFileSync } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,52 +26,42 @@ const writePrompt = (name, content) => fs.writeFileSync(path.join(PROMPTS_DIR, `
 const ensureDir = (dir) => { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); };
 
 /**
- * Call Claude Code CLI.
- * Uses `claude -p` for one-shot prompts with system prompt via --system-prompt.
+ * Call Claude via SDK's query(). Works with subscription, no API key needed.
  */
 const runLLM = async ({ systemPrompt, userPrompt, model = 'sonnet', silent = false }) => {
-    const args = [
-        '-p', userPrompt,
-        '--output-format', 'json',
-        '--max-turns', '1',
-        '--no-input'
-    ];
-
-    if (systemPrompt) {
-        args.push('--system-prompt', systemPrompt);
-    }
-
-    if (model) {
-        args.push('--model', model);
-    }
-
-    try {
-        const result = execFileSync('claude', args, {
-            encoding: 'utf-8',
-            maxBuffer: 10 * 1024 * 1024, // 10MB
-            timeout: 120_000, // 2 min
-            env: { ...process.env }
-        });
-
-        const parsed = JSON.parse(result);
-        const text = parsed.result || '';
-
-        if (!silent) {
-            const preview = text.substring(0, 200);
-            console.log(`  [${model}] ${preview}${text.length > 200 ? '...' : ''}`);
+    const result = query({
+        prompt: userPrompt,
+        options: {
+            model,
+            tools: [],
+            systemPrompt,
+            maxTurns: 1,
+            permissionMode: 'bypassPermissions',
+            allowDangerouslySkipPermissions: true
         }
+    });
 
-        return text;
-    } catch (err) {
-        console.error(`  ⚠️  Claude CLI error: ${err.message}`);
-        if (err.stdout) {
-            try {
-                const parsed = JSON.parse(err.stdout);
-                return parsed.result || '';
-            } catch { /* ignore */ }
+    let finalText = '';
+    for await (const message of result) {
+        if (message.type === 'assistant') {
+            const textContent = message.message?.content?.find(b => b.type === 'text');
+            if (textContent?.text) {
+                finalText = textContent.text;
+                if (!silent) {
+                    console.log(`  [${model}] ${finalText.substring(0, 200)}${finalText.length > 200 ? '...' : ''}`);
+                }
+            }
         }
-        return '';
+        if (message.type === 'result') {
+            // Use result text if available
+            if (message.result) finalText = message.result;
+            if (!silent) {
+                console.log(`  Cost: $${message.total_cost_usd?.toFixed(4) || '?'}, Duration: ${message.duration_ms}ms`);
+            }
+        }
     }
+
+    return finalText;
 };
 
 const extractJSON = (text) => {
@@ -260,7 +250,7 @@ const deterministicValidation = (flowJson) => {
  * @param {number} [options.maxIterations=5] - Max generate→review iterations before meta-improvement
  * @param {number} [options.maxMetaRounds=3] - Max meta-improvement rounds
  * @param {string} [options.generatorModel='sonnet'] - Model for generator
- * @param {string} [options.reviewerModel='sonnet'] - Model for reviewer (different model = more diverse review)
+ * @param {string} [options.reviewerModel='sonnet'] - Model for reviewer
  * @param {string} [options.metaModel='sonnet'] - Model for meta-improver
  * @param {string} [options.connectorContext=''] - Additional context about the connector
  * @returns {Promise<{flowJson: Object, iterations: number, metaRounds: number, history: Array, success: boolean}>}
