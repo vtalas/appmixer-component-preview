@@ -18,6 +18,7 @@
  * Requires: Claude Code CLI (`claude`) installed and authenticated (Claude Max).
  */
 
+import 'dotenv/config';
 import fs from 'fs';
 import { run } from './selfImprovingTestFlowAgent.js';
 
@@ -43,8 +44,7 @@ const result = await run({
     generatorModel: getArg('generator-model', 'sonnet'),
     reviewerModel: getArg('reviewer-model', 'haiku'),
     metaModel: getArg('meta-model', 'sonnet'),
-    connectorContext: getArg('context', null) ? fs.readFileSync(getArg('context', ''), 'utf-8') : '',
-    connectorsDir: getArg('connectors-dir', '')
+    connectorsDir: getArg('connectors-dir', process.env.CONNECTORS_DIR || '')
 });
 
 const outputPath = getArg('output', flowPath);

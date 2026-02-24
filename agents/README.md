@@ -66,7 +66,6 @@ node agents/run.js path/to/test-flow.json \
 node agents/run.js path/to/test-flow.json --output /tmp/fixed-flow.json
 
 # Pass connector context (component schemas, instructions)
-node agents/run.js path/to/test-flow.json --context path/to/copilot-instructions.md
 ```
 
 ### CLI Options
@@ -79,7 +78,6 @@ node agents/run.js path/to/test-flow.json --context path/to/copilot-instructions
 | `--generator-model M` | sonnet | Model for fixing flows |
 | `--reviewer-model M` | haiku | Model for reviewing (fast; use opus for thorough review) |
 | `--meta-model M` | sonnet | Model for prompt improvement |
-| `--context PATH` | — | File with connector context (instructions, notes) |
 | `--output PATH` | input file | Where to write the result |
 
 ### Recommended Configurations
@@ -101,9 +99,12 @@ node agents/run.js flow.json --max-iterations 3 --max-meta-rounds 1
 agents/
 ├── README.md                          ← you are here
 ├── run.js                             ← CLI runner
-├── selfImprovingTestFlowAgent.js      ← main orchestrator
-├── utils.js                           ← shared validation logic (deterministicValidation, inputCoverageValidation, extractJSON)
+├── selfImprovingTestFlowAgent.js      ← orchestrator (validate → review → fix → meta-improve)
+├── utils.js                           ← re-exports from validators + extractJSON
 ├── test.js                            ← tests (node --test agents/test.js)
+├── validators/
+│   ├── structural.js                  ← flow name, required components, AfterAll wiring, variable mapping, source refs
+│   └── coverage.js                    ← input coverage, field names vs schema, enum/type checks, data quality
 ├── prompts/
 │   ├── generator-system.md            ← system prompt for flow fixer (editable by meta-improver)
 │   ├── reviewer-system.md             ← system prompt for reviewer (editable by meta-improver)
