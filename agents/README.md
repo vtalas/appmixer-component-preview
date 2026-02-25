@@ -1,100 +1,152 @@
-# Self-Improving Test Flow Agent
+# Appmixer E2E Test Flow Agents
 
-Generates, validates, and iteratively fixes Appmixer E2E test flows using a multi-model agent loop with automatic prompt improvement.
+Two self-improving agents for generating, validating, and deploying Appmixer E2E test flows.
 
-## How It Works
+## Architecture
 
 ```
-┌───────────────┐     ┌───────────┐     ┌───────────┐
-│  Deterministic│────▶│ LLM       │────▶│ Generator │──┐
-│  Validation   │     │ Reviewer  │     │ (fixer)   │  │
-└───────────────┘     └───────────┘     └───────────┘  │
-       ▲                                               │
-       └───────────────────────────────────────────────┘
-                    repeat max N times
-                          │
-                   after N failures
-                          ▼
-                 ┌───────────────────┐
-                 │  Meta-Improver    │
-                 │  edits prompts/   │
-                 │  generator-system │
-                 │  reviewer-system  │
-                 └───────────────────┘
+                    ┌─────────────────────────────────────────────┐
+                    │         selfImprovingTestFlowAgent          │
+                    │                                             │
+                    │  Deterministic ──▶ LLM Review ──▶ Fix      │
+                    │       ▲                              │      │
+                    │       └──────────────────────────────┘      │
+                    │              repeat × N iterations          │
+                    │                      │                      │
+                    │               after N failures              │
+                    │                      ▼                      │
+                    │              Meta-Improver                  │
+                    │           (edits prompt files)              │
+                    └──────────────────┬──────────────────────────┘
+                                       │ --upload or standalone
+                                       ▼
+                    ┌─────────────────────────────────────────────┐
+                    │            serverFlowAgent                  │
+                    │                                             │
+                    │  Upload ──▶ Validate ──▶ Start ──▶ Fix     │
+                    │    ▲                                  │     │
+                    │    └──────────────────────────────────┘     │
+                    │              repeat × N iterations          │
+                    │                      │                      │
+                    │               after N failures              │
+                    │                      ▼                      │
+                    │              Meta-Improver                  │
+                    │         (edits generator prompt)            │
+                    └─────────────────────────────────────────────┘
 ```
 
-1. **Deterministic validation** — checks variable mapping, source connections, AfterAll wiring, ProcessE2EResults config (no LLM needed)
-2. **Input coverage validation** — compares flow fields against component.json schemas, checks required fields, enum values, data quality (requires `--connectors-dir`)
-3. **LLM Review** — a different model (haiku by default) checks semantics, logic, field names
+### selfImprovingTestFlowAgent
+
+Local validation loop. Catches structural issues, input coverage gaps, and semantic problems **before** hitting the server.
+
+1. **Deterministic validation** — variable mapping, source connections, AfterAll wiring, ProcessE2EResults config
+2. **Input coverage validation** — fields vs component.json schemas, required fields, enums, data quality (needs `--connectors-dir`)
+3. **LLM Review** — semantic check by a separate model (haiku by default)
 4. **Generator fix** — receives all errors, outputs corrected flow JSON
-5. **Repeat** up to `--max-iterations` times (default: 5)
-6. **Meta-improver** — after exhausting iterations, analyzes error patterns and **edits the prompt files** in `prompts/` to prevent recurring mistakes. Then reruns the loop with improved prompts.
+5. **Meta-improver** — after exhausting iterations, analyzes error patterns and edits prompt files to prevent recurring mistakes
+
+### serverFlowAgent
+
+Server round-trip loop. Takes a (locally validated) flow and makes sure it actually works on the Appmixer server.
+
+1. **Upload** — `POST /flows` (create) or `PUT /flows/:id` (update)
+2. **Validate** — `GET /flows/:id/validate`
+3. **Start** — `POST /flows/:id/coordinator` with `{ command: 'start' }`
+4. **Parse errors** — server validation errors, start failures
+5. **Generator fix** — same LLM fixer, but fed with server-side errors
+6. **Meta-improver** — same pattern, improves generator prompt based on server error patterns
 
 ## Requirements
 
 - Node.js 18+
-- `@anthropic-ai/claude-agent-sdk` (installed in this project)
-- **Claude Max subscription** (no API key needed — SDK uses your authenticated `claude` CLI)
+- `@anthropic-ai/claude-agent-sdk` — uses your authenticated `claude` CLI (Claude Max subscription)
+- `.env` with `APPMIXER_BASE_URL`, `APPMIXER_USERNAME`, `APPMIXER_PASSWORD` (for server agent)
 
-Make sure you're logged into Claude Code CLI:
 ```bash
-claude --version  # should work without errors
+claude --version  # verify CLI auth
 ```
 
 ## Usage
 
-```bash
-cd /Users/vladimir/Projects/appmixer-component-preview
+### Local validation + fix
 
-# Basic — fix a flow with defaults (5 iterations, 3 meta rounds, sonnet model)
-node agents/run.js path/to/test-flow.json
+```bash
+# Basic (5 iterations, 3 meta rounds)
+node agents/run.js path/to/flow.json
 
 # With component schema validation (recommended)
-node agents/run.js path/to/test-flow.json \
-  --connectors-dir /Users/vladimir/Projects/appmixer-connectors/src
+node agents/run.js path/to/flow.json \
+  --connectors-dir /path/to/appmixer-connectors/src
 
-# Custom models and limits
-node agents/run.js path/to/test-flow.json \
-  --connectors-dir /Users/vladimir/Projects/appmixer-connectors/src \
-  --max-iterations 5 \
-  --max-meta-rounds 3 \
-  --generator-model sonnet \
-  --reviewer-model opus \
-  --meta-model opus
+# Custom models
+node agents/run.js path/to/flow.json \
+  --generator-model opus --reviewer-model sonnet --meta-model opus
 
-# Write output to a different file (default: overwrites input)
-node agents/run.js path/to/test-flow.json --output /tmp/fixed-flow.json
+# Quick test
+node agents/run.js path/to/flow.json --max-iterations 3 --max-meta-rounds 1
 
-# Pass connector context (component schemas, instructions)
+# Full pipeline: local validate → fix → upload → server validate → start
+node agents/run.js path/to/flow.json --upload
+```
+
+### Server validation + fix (standalone)
+
+```bash
+# Upload, validate, and try to start
+node agents/runServer.js path/to/flow.json
+
+# Validate only (don't try to start)
+node agents/runServer.js path/to/flow.json --no-start
+
+# Keep the flow on the server after done
+node agents/runServer.js path/to/flow.json --no-cleanup
+
+# Custom limits
+node agents/runServer.js path/to/flow.json --max-iterations 10 --max-meta-rounds 3
+
+# Write output to a different file
+node agents/runServer.js path/to/flow.json --output /tmp/fixed.json
 ```
 
 ### CLI Options
 
+#### `run.js` (local agent)
+
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--connectors-dir PATH` | — | Path to `appmixer-connectors/src` for schema validation |
-| `--max-iterations N` | 5 | Generate→review cycles per meta round |
-| `--max-meta-rounds N` | 3 | How many times meta-improver rewrites prompts |
+| `--max-iterations N` | 5 | Fix iterations per meta round |
+| `--max-meta-rounds N` | 3 | Meta-improvement rounds |
 | `--generator-model M` | sonnet | Model for fixing flows |
-| `--reviewer-model M` | haiku | Model for reviewing (fast; use opus for thorough review) |
+| `--reviewer-model M` | haiku | Model for reviewing |
 | `--meta-model M` | sonnet | Model for prompt improvement |
 | `--output PATH` | input file | Where to write the result |
-| `--upload` | off | Upload to Appmixer server on success, validate + start |
+| `--upload` | off | Upload to server on success |
 
-### Recommended Configurations
+#### `runServer.js` (server agent)
 
-```bash
-# Fast iteration (cheap, good for most flows)
-node agents/run.js flow.json --reviewer-model sonnet --generator-model sonnet
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--max-iterations N` | 5 | Fix iterations per meta round |
+| `--max-meta-rounds N` | 2 | Meta-improvement rounds |
+| `--generator-model M` | sonnet | Model for fixing flows |
+| `--meta-model M` | sonnet | Model for prompt improvement |
+| `--output PATH` | input file | Where to write the result |
+| `--no-start` | — | Only validate, don't try to start |
+| `--no-cleanup` | — | Don't delete flow from server when done |
 
-# High quality (more expensive, catches more issues)
-node agents/run.js flow.json --reviewer-model opus --meta-model opus
+## Programmatic Usage
 
-# Quick test (1 round, 3 iterations)
-node agents/run.js flow.json --max-iterations 3 --max-meta-rounds 1
+```javascript
+// Local validation loop
+import { run } from './selfImprovingTestFlowAgent.js';
+const result = await run({ flowJson, maxIterations: 5, upload: false });
 
-# Full pipeline: validate → fix → upload → server validate → start
-node agents/run.js flow.json --upload
+// Server validation loop
+import { run } from './serverFlowAgent.js';
+const result = await run({ flowJson, maxIterations: 5, tryStart: true, cleanup: true });
+
+// result: { flowJson, success, iterations, metaRounds, history, flowId? }
 ```
 
 ## Project Structure
@@ -102,111 +154,81 @@ node agents/run.js flow.json --upload
 ```
 agents/
 ├── README.md                          ← you are here
-├── run.js                             ← CLI runner
-├── selfImprovingTestFlowAgent.js      ← orchestrator (validate → review → fix → meta-improve)
-├── utils.js                           ← re-exports from validators + extractJSON
+├── run.js                             ← CLI: local validation agent
+├── runServer.js                       ← CLI: server validation agent
+├── selfImprovingTestFlowAgent.js      ← local orchestrator
+├── serverFlowAgent.js                 ← server orchestrator
+├── utils.js                           ← shared utils (extractJSON, validator re-exports)
 ├── test.js                            ← tests (node --test agents/test.js)
 ├── validators/
-│   ├── structural.js                  ← flow name, required components, AfterAll wiring, variable mapping, source refs
-│   └── coverage.js                    ← input coverage, field names vs schema, enum/type checks, data quality
+│   ├── structural.js                  ← flow structure, wiring, variable mapping
+│   └── coverage.js                    ← input coverage vs component.json schemas
 ├── prompts/
-│   ├── generator-system.md            ← system prompt for flow fixer (editable by meta-improver)
-│   ├── reviewer-system.md             ← system prompt for reviewer (editable by meta-improver)
+│   ├── generator-system.md            ← system prompt for fixer (editable by meta-improver)
+│   ├── reviewer-system.md             ← system prompt for reviewer
 │   └── meta-improver-system.md        ← system prompt for meta-improver
 └── logs/
-    └── run-<timestamp>.json           ← full history of each run
+    ├── run-<timestamp>.json           ← local agent logs
+    └── server-run-<timestamp>.json    ← server agent logs
 ```
 
 ## Prompt Files
 
-The key feature: **prompts are files, not hardcoded strings**. The meta-improver literally edits them.
+Prompts are **files, not hardcoded strings**. The meta-improver edits them between rounds.
 
-- `prompts/generator-system.md` — Rules for how to generate/fix flows. After meta-improvement, you'll see a `## Changelog` section at the bottom.
-- `prompts/reviewer-system.md` — Checklist for reviewing flows. Gets stricter over time as the meta-improver adds emphasis to frequently-violated rules.
-- `prompts/meta-improver-system.md` — Instructions for the meta-improver itself. You can edit this to change improvement strategy.
+- `generator-system.md` — Rules for generating/fixing flows
+- `reviewer-system.md` — Checklist for reviewing flows
+- `meta-improver-system.md` — Instructions for the meta-improver itself
 
-**Tip:** Version control these files. If prompts degrade after meta-improvement, `git checkout` them.
-
-## Programmatic Usage
-
-```javascript
-import { run } from './selfImprovingTestFlowAgent.js';
-
-const result = await run({
-    flowJson: JSON.parse(fs.readFileSync('flow.json', 'utf-8')),
-    maxIterations: 5,
-    maxMetaRounds: 3,
-    generatorModel: 'sonnet',
-    reviewerModel: 'opus',
-    metaModel: 'opus',
-    connectorContext: 'component schemas here...'
-});
-
-if (result.success) {
-    console.log(`Fixed in ${result.iterations} iterations`);
-    fs.writeFileSync('flow.json', JSON.stringify(result.flowJson, null, 4));
-} else {
-    console.log(`Failed after ${result.iterations} iterations`);
-    // result.flowJson still has the best attempt
-}
-```
+**Tip:** Version control these. If prompts degrade: `git checkout agents/prompts/`
 
 ## What Gets Validated
 
-### Deterministic (no LLM, instant)
+### Local — Deterministic (instant, no LLM)
 - Flow name format (`E2E ...`)
 - Required components (OnStart, AfterAll, ProcessE2EResults)
-- All Assert components connected to AfterAll's `source.in`
-- Variable mapping: every modifier has matching `{{{varId}}}` in lambda
-- Source connections: transform references exist in `source.in`
-- Variable paths: `$.component-id.out.field` → component-id must exist in flow
-- ProcessE2EResults: successStoreId, failedStoreId, result mapping
+- Assert → AfterAll wiring
+- Variable mapping: modifier ↔ `{{{varId}}}` in lambda
+- Source connections: transform refs exist in `source.in`
+- Variable paths: `$.component-id.out.field` → component exists
+- ProcessE2EResults config (store IDs, result mapping)
 
-### Input Coverage (requires `--connectors-dir`, instant)
-- Required fields from component.json are provided
-- No unknown fields (not in schema)
-- Enum values match allowed values
-- Type compliance (integer, boolean)
-- Warns about untested optional fields
-- Warns about generic/meaningless data ("test", "", "foo"...)
+### Local — Input Coverage (instant, needs `--connectors-dir`)
+- Required fields provided
+- No unknown fields
+- Enum values match schema
+- Type compliance
+- Data quality warnings (generic/meaningless values)
 
-### LLM Review (semantic, haiku by default)
-- CRUD operation sequence makes logical sense
+### Local — LLM Review (semantic)
+- CRUD sequence logic
 - Assert expressions test meaningful values
-- Data flow is complete (no missing intermediate steps)
+- Data flow completeness
 
-### Server-side (with `--upload`)
-After local validation passes, the flow is uploaded to Appmixer and validated server-side:
+### Server — Validation endpoint
 - Schema validation of properties and inputs
-- Invalid variable references (components that no longer exist)
+- Invalid variable references
 - Missing component manifests
 
-Errors are classified as:
-- **Fixable** → sent back to generator for another fix attempt
-- **Human required** (auth, missing components) → agent stops, prints instructions
+### Server — Start attempt
+- Runtime errors on flow start
+- Missing auth/accounts
+- Component initialization failures
 
-## Logs
+## Tests
 
-Every run saves a full log to `logs/run-<timestamp>.json` containing:
-- All iterations with error counts
-- Deterministic + LLM errors per iteration
-- Final flow JSON (success or best attempt)
+```bash
+node --test agents/test.js
+```
+
+Tests cover: `extractJSON`, `deterministicValidation` (all rules), `getInputSchema`, `inputCoverageValidation` (with real connectors if available).
 
 ## Troubleshooting
 
-**"Cannot find package '@anthropic-ai/claude-agent-sdk'"**
-```bash
-cd /Users/vladimir/Projects/appmixer-component-preview
-npm install @anthropic-ai/claude-agent-sdk
-```
-
-**Timeout / SIGTERM**
-Each LLM call takes ~30-60s. A full run with 5 iterations × 2 LLM calls = ~5-10 minutes. Run it directly in terminal, not through a wrapper with short timeouts.
-
-**Meta-improver made prompts worse**
-```bash
-git checkout agents/prompts/
-```
-
-**LLM returns invalid JSON**
-The agent retries in the next iteration. If it keeps failing, try `--generator-model opus`.
+| Problem | Fix |
+|---------|-----|
+| Cannot find `@anthropic-ai/claude-agent-sdk` | `npm install @anthropic-ai/claude-agent-sdk` |
+| Timeout / SIGTERM | Run directly in terminal, not through short-timeout wrappers |
+| Meta-improver made prompts worse | `git checkout agents/prompts/` |
+| LLM returns invalid JSON | Retries next iteration; try `--generator-model opus` |
+| Server auth fails | Check `.env` — `APPMIXER_BASE_URL`, `APPMIXER_USERNAME`, `APPMIXER_PASSWORD` |
