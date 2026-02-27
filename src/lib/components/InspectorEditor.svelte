@@ -241,6 +241,12 @@
 		return type === 'expression';
 	}
 
+	// Check if input needs full-width in grid
+	function isWideInput(input) {
+		const type = input.type || 'text';
+		return type === 'textarea' || type === 'expression' || type === 'key-value';
+	}
+
 	// Expression field types
 	const EXPRESSION_FIELD_TYPES = [
 		{ value: 'text', label: 'Text' },
@@ -446,9 +452,10 @@
 </div>
 
 {#snippet InputField(key, input)}
-	<div class="input-field">
+	<div class="input-field" class:grid-wide={isWideInput(input)}>
 		<div class="input-definition">
 		<div class="input-label-row">
+			<span class="input-index">{input.index ?? ''}</span>
 			{#if editingLabel === key}
 				<div class="edit-inline">
 					<Input
@@ -476,13 +483,21 @@
 					<Pencil class="edit-icon h-3 w-3" />
 				</Label>
 			{/if}
+			<select
+				class="type-select"
+				value={input.type || 'text'}
+				onchange={(e) => handleTypeChange(key, e.currentTarget.value)}
+			>
+				{#each INPUT_TYPES as inputType}
+					<option value={inputType.value}>{inputType.label}</option>
+				{/each}
+			</select>
 			<label class="required-checkbox" title="Required field">
 				<input
 					type="checkbox"
 					checked={isRequired(key)}
 					onchange={() => toggleRequired(key)}
 				/>
-				<span class="required-checkbox-label">Required</span>
 			</label>
 		</div>
 
@@ -518,148 +533,6 @@
 					</button>
 				{/if}
 			</div>
-
-			<label class="input-type-selector">
-				<span class="type-label">Type:</span>
-				<select
-					class="type-select"
-					value={input.type || 'text'}
-					onchange={(e) => handleTypeChange(key, e.currentTarget.value)}
-				>
-					{#each INPUT_TYPES as inputType}
-						<option value={inputType.value}>{inputType.label}</option>
-					{/each}
-				</select>
-			</label>
-		</div>
-		</div>
-
-		<div class="input-value-section">
-		<div class="input-control">
-			{#if input.type === 'text'}
-				<Input
-					type="text"
-					placeholder={input.defaultValue?.toString() || ''}
-					value={getInputValue(key)?.toString() || ''}
-					oninput={(e) => setInputValue(key, e.currentTarget.value)}
-					class="editor-input"
-				/>
-			{:else if input.type === 'textarea'}
-				<textarea
-					placeholder={input.defaultValue?.toString() || ''}
-					value={getInputValue(key)?.toString() || ''}
-					oninput={(e) => setInputValue(key, e.currentTarget.value)}
-					class="editor-textarea"
-				></textarea>
-			{:else if input.type === 'number'}
-				<Input
-					type="number"
-					placeholder={input.defaultValue?.toString() || ''}
-					value={getInputValue(key)?.toString() || ''}
-					oninput={(e) => setInputValue(key, e.currentTarget.value)}
-					class="editor-input"
-				/>
-			{:else if input.type === 'date-time'}
-				<Input
-					type="datetime-local"
-					value={(() => { const v = getInputValue(key)?.toString() || ''; return v.length > 16 ? v.slice(0, 16) : v; })()}
-					oninput={(e) => { const v = e.currentTarget.value; setInputValue(key, v ? v + ':00Z' : ''); }}
-					class="editor-input"
-				/>
-			{:else if input.type === 'select'}
-				{#if input.options && input.options.length > 0}
-					<select
-						class="editor-select"
-						value={getInputValue(key)?.toString() || ''}
-						onchange={(e) => setInputValue(key, e.currentTarget.value)}
-					>
-						<option value="">Select...</option>
-						{#each input.options as option}
-							<option value={option.value}>{option.label}</option>
-						{/each}
-					</select>
-				{:else if input.source}
-					<div class="dynamic-source">
-						<select class="editor-select" disabled>
-							<option value="">Loading from source...</option>
-						</select>
-						<div class="source-info">
-							<span class="source-url">{input.source.url}</span>
-						</div>
-					</div>
-				{:else}
-					<select class="editor-select" disabled>
-						<option value="">No options available</option>
-					</select>
-				{/if}
-			{:else if input.type === 'toggle'}
-				<button
-					type="button"
-					class="toggle-button {getInputValue(key) ? 'active' : ''}"
-					onclick={() => setInputValue(key, !getInputValue(key))}
-					aria-pressed={!!getInputValue(key)}
-				>
-					{#if getInputValue(key)}
-						<ToggleRight class="h-5 w-5" />
-					{:else}
-						<ToggleLeft class="h-5 w-5" />
-					{/if}
-					<span class="toggle-label">{getInputValue(key) ? 'Yes' : 'No'}</span>
-				</button>
-			{:else if input.type === 'filepicker'}
-				<Button variant="outline" class="filepicker-button">
-					Choose File...
-				</Button>
-			{:else if input.type === 'expression'}
-				<div class="expression-builder">
-					<div class="expression-header">
-						<Badge variant="outline" class="expression-badge">Expression</Badge>
-						{#if input.levels}
-							<span class="expression-levels">Levels: {input.levels.join(', ')}</span>
-						{/if}
-					</div>
-					{#if input.fields}
-						<div class="expression-fields">
-							{#each Object.entries(input.fields) as [fieldKey, field]}
-								<div class="expression-field">
-									<Label class="expression-field-label">{field.label || fieldKey}</Label>
-									{#if field.type === 'select'}
-										{#if field.options && field.options.length > 0}
-											<select class="editor-select">
-												<option value="">Select {field.label || fieldKey}...</option>
-												{#each field.options as option}
-													<option value={option.value}>{option.label}</option>
-												{/each}
-											</select>
-										{:else if field.source}
-											<select class="editor-select" disabled>
-												<option value="">Dynamic source</option>
-											</select>
-										{:else}
-											<select class="editor-select">
-												<option value="">Select...</option>
-											</select>
-										{/if}
-									{:else if field.type === 'text'}
-										<Input type="text" class="editor-input" placeholder="" />
-									{:else}
-										<Input type="text" class="editor-input" placeholder="" />
-									{/if}
-								</div>
-							{/each}
-						</div>
-						<Button variant="outline" size="sm" class="add-condition-btn">
-							+ Add Condition
-						</Button>
-					{/if}
-				</div>
-			{:else}
-				<Input
-					type="text"
-					placeholder=""
-					class="editor-input"
-				/>
-			{/if}
 		</div>
 		</div>
 
@@ -953,39 +826,56 @@
 	}
 
 	:global(.group-content) {
-		padding: 0;
+		padding: 12px;
+		display: grid;
+		grid-template-columns: repeat(3, 1fr);
+		gap: 12px;
 	}
 
 	.ungrouped-section {
-		display: flex;
-		flex-direction: column;
+		display: grid;
+		grid-template-columns: repeat(3, 1fr);
+		gap: 12px;
+		padding: 12px;
 	}
 
 	.input-field {
 		display: flex;
 		flex-direction: column;
-		border-bottom: 1px solid var(--color-border);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		overflow: hidden;
 	}
 
-	.input-field:last-child {
-		border-bottom: none;
+	.input-field.grid-wide {
+		grid-column: 1 / -1;
 	}
 
 	.input-definition {
-		padding: 10px 16px 8px;
+		padding: 8px 12px 6px;
 		background: var(--color-muted);
 		border-bottom: 1px dashed color-mix(in srgb, var(--color-border) 60%, transparent);
 	}
 
 	.input-value-section {
-		padding: 8px 16px 12px;
+		padding: 6px 12px 10px;
+		flex: 1;
 	}
 
 	.input-label-row {
 		display: flex;
 		align-items: center;
 		gap: 6px;
-		margin-bottom: 8px;
+		margin-bottom: 4px;
+	}
+
+	.input-index {
+		font-size: 10px;
+		font-weight: 600;
+		color: var(--color-muted-foreground);
+		min-width: 14px;
+		text-align: center;
+		flex-shrink: 0;
 	}
 
 	:global(.input-label) {
@@ -1026,11 +916,8 @@
 	.required-checkbox {
 		display: flex;
 		align-items: center;
-		gap: 4px;
-		margin-left: auto;
 		cursor: pointer;
-		font-size: 12px;
-		color: var(--color-muted-foreground);
+		flex-shrink: 0;
 		user-select: none;
 	}
 
@@ -1041,43 +928,26 @@
 		accent-color: var(--color-primary);
 	}
 
-	.required-checkbox-label {
-		font-weight: 400;
-	}
-
 	.input-meta-row {
 		display: flex;
 		align-items: flex-start;
-		gap: 12px;
-		margin-bottom: 8px;
+		gap: 8px;
 	}
 
 	.input-tooltip-row {
 		flex: 1;
 	}
 
-	.input-type-selector {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		flex-shrink: 0;
-	}
-
-	.type-label {
-		font-size: 12px;
-		color: var(--color-muted-foreground);
-		white-space: nowrap;
-	}
-
 	.type-select {
-		height: 28px;
-		padding: 0 8px;
+		height: 24px;
+		padding: 0 6px;
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius-sm);
-		font-size: 12px;
+		font-size: 11px;
 		background: var(--color-background);
 		cursor: pointer;
-		color: var(--color-foreground);
+		color: var(--color-muted-foreground);
+		flex-shrink: 0;
 	}
 
 	.type-select:focus {

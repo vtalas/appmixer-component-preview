@@ -199,115 +199,112 @@
 		return values;
 	}
 
-	function generateData() {
+	function buildGeneratedData() {
 		const extractedValues = extractValuesFromTestPlan();
+		const generated = {};
 
 		for (const port of (componentJson.inPorts || [])) {
 			if (!port.inspector?.inputs) continue;
 
-			if (!portFormValues[port.name]) {
-				portFormValues[port.name] = {};
+			if (!generated[port.name]) {
+				generated[port.name] = {};
 			}
 
 			for (const [key, input] of Object.entries(port.inspector.inputs)) {
-				// Skip if already filled
-				const current = portFormValues[port.name][key];
-				if (current !== undefined && current !== null && current !== '') continue;
-
 				const keyLower = key.toLowerCase();
 				const label = (input.label || '').toLowerCase();
 				const type = input.type || 'text';
 
-				let generated = null;
+				let value = null;
 
 				// 1. For ID-like fields, search test plan results
 				if (keyLower.includes('id') || label.includes('id')) {
-					// Try exact match first
 					if (extractedValues.has(keyLower)) {
-						generated = extractedValues.get(keyLower).value;
+						value = extractedValues.get(keyLower).value;
 					} else if (extractedValues.has(key)) {
-						generated = extractedValues.get(key).value;
+						value = extractedValues.get(key).value;
 					} else {
-						// Try partial match - e.g. "folderId" matches "id" from a folder-related component
-						// Strip "id" suffix and look for the entity type
 						const entity = keyLower.replace(/id$/, '').replace(/_id$/, '');
 						if (entity) {
-							// Look for "id" in a component whose name contains the entity
 							for (const [, entry] of extractedValues) {
 								if (entry.component && entry.component.toLowerCase().includes(entity)) {
-									// Check if there's an "id" value from that component
-									generated = entry.value;
+									value = entry.value;
 									break;
 								}
 							}
 						}
-						// Fallback: look for any 'id' value
-						if (!generated && extractedValues.has('id')) {
-							generated = extractedValues.get('id').value;
+						if (!value && extractedValues.has('id')) {
+							value = extractedValues.get('id').value;
 						}
 					}
 				}
 
 				// 2. For select fields, pick the first option
-				if (!generated && (type === 'select' || type === 'multiselect')) {
+				if (!value && (type === 'select' || type === 'multiselect')) {
 					if (input.options && input.options.length > 0) {
 						const firstOpt = input.options[0];
-						generated = typeof firstOpt === 'object' ? (firstOpt.value ?? firstOpt.content) : firstOpt;
+						value = typeof firstOpt === 'object' ? (firstOpt.value ?? firstOpt.content) : firstOpt;
 					}
 				}
 
-				// 3. For date-time fields — store as ISO 8601 (CLI format), display converts automatically
-				if (!generated && type === 'date-time') {
+				// 3. For date-time fields
+				if (!value && type === 'date-time') {
 					const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 					future.setMinutes(0, 0, 0);
-					generated = future.toISOString().replace(/\.\d{3}Z$/, 'Z');
+					value = future.toISOString().replace(/\.\d{3}Z$/, 'Z');
 				}
 
 				// 4. For toggle fields
-				if (!generated && type === 'toggle') {
-					generated = 'true';
+				if (!value && type === 'toggle') {
+					value = 'true';
 				}
 
-				// 4. For text-like fields, generate sensible defaults
-				if (!generated && (type === 'text' || type === 'textarea' || type === 'number')) {
+				// 5. For text-like fields, generate sensible defaults
+				if (!value && (type === 'text' || type === 'textarea' || type === 'number')) {
 					if (keyLower.includes('date') || keyLower.endsWith('_at') || keyLower.endsWith('at')
 						|| label.includes('date') || label.includes('time')
 						|| keyLower.includes('start') || keyLower.includes('end')) {
 						const offset = keyLower.includes('end') || keyLower.includes('to') ? 14 : 7;
 						const future = new Date(Date.now() + offset * 24 * 60 * 60 * 1000);
 						future.setMinutes(0, 0, 0);
-						generated = future.toISOString().replace(/\.\d{3}Z$/, 'Z');
+						value = future.toISOString().replace(/\.\d{3}Z$/, 'Z');
 					} else if (keyLower.includes('email')) {
-						generated = 'test@example.com';
+						value = 'test@example.com';
 					} else if (keyLower.includes('name') || label.includes('name')) {
-						generated = `Test ${key} ${Date.now().toString(36)}`;
+						value = `Test ${key} ${Date.now().toString(36)}`;
 					} else if (keyLower.includes('url') || label.includes('url')) {
-						generated = 'https://example.com';
+						value = 'https://example.com';
 					} else if (keyLower.includes('phone') || label.includes('phone')) {
-						generated = '+1234567890';
+						value = '+1234567890';
 					} else if (type === 'number') {
-						generated = '1';
+						value = '1';
 					} else if (keyLower.includes('description') || keyLower.includes('desc') || label.includes('description')) {
-						generated = 'Test description';
+						value = 'Test description';
 					} else {
-						// Check test plan for any matching field name
 						if (extractedValues.has(keyLower)) {
-							generated = extractedValues.get(keyLower).value;
+							value = extractedValues.get(keyLower).value;
 						}
 					}
 				}
 
-				if (generated !== null) {
-					portFormValues[port.name][key] = generated;
-					// Notify form value change handler
-					const handler = createFormValueChangeHandler(port.name);
-					handler(key, generated);
+				if (value !== null) {
+					generated[port.name][key] = value;
 				}
 			}
 		}
 
-		// Force reactivity
-		portFormValues = { ...portFormValues };
+		return generated;
+	}
+
+	function generateData() {
+		const data = buildGeneratedData();
+		editingCmd = {
+			cmdIndex: null,
+			inputJson: JSON.stringify(data, null, 2),
+			propsJson: '',
+			tickValue: tickPeriod || '',
+			error: null
+		};
 	}
 
 	function toggleResult(index) {
@@ -426,11 +423,12 @@
 	}
 
 	function saveEditedCommand() {
-		if (!editingCmd || !onEditCommand) return;
+		if (!editingCmd) return;
 		const { cmdIndex, inputJson, propsJson, tickValue } = editingCmd;
 		// Validate -i JSON
+		let parsedInput;
 		try {
-			JSON.parse(inputJson);
+			parsedInput = JSON.parse(inputJson);
 		} catch {
 			editingCmd = { ...editingCmd, error: 'Invalid -i JSON. Please fix the syntax.' };
 			return;
@@ -444,8 +442,22 @@
 				return;
 			}
 		}
-		onEditCommand(cmdIndex, inputJson, propsJson.trim() || null, tickValue.trim() || null);
-		editingCmd = null;
+
+		if (cmdIndex === null) {
+			// Generated data — run as new test
+			portFormValues = parsedInput;
+			tickPeriod = tickValue?.trim() || '';
+			editingCmd = null;
+			if (onRunTest) {
+				onRunTest({ portValues: portFormValues, tickPeriod });
+			}
+		} else {
+			// Editing existing command
+			if (onEditCommand) {
+				onEditCommand(cmdIndex, inputJson, propsJson.trim() || null, tickValue.trim() || null);
+			}
+			editingCmd = null;
+		}
 	}
 </script>
 
@@ -467,8 +479,6 @@
 				onOptionsChange={createOptionsChangeHandler(port.name)}
 				onFieldsChange={createFieldsChangeHandler(port.name)}
 				onSourceChange={createSourceChangeHandler(port.name)}
-				onFormValueChange={createFormValueChangeHandler(port.name)}
-				externalFormValues={portFormValues[port.name]}
 			/>
 		{:else if port.schema}
 			<div class="schema-section">
@@ -689,15 +699,17 @@
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div class="edit-modal" onclick={(e) => e.stopPropagation()}>
 			<div class="edit-modal-header">
-				<span class="edit-modal-title">Edit Command Input</span>
+				<span class="edit-modal-title">{editingCmd.cmdIndex === null ? 'Generated Input Data' : 'Edit Command Input'}</span>
 				<button class="edit-modal-close" onclick={() => editingCmd = null}>&times;</button>
 			</div>
 			<div class="edit-modal-body">
-				<label class="edit-modal-label">Base command</label>
-				<code class="edit-modal-base-cmd">{getBaseCommand(
-					testResults[editingCmd.cmdIndex]?.cmd ||
-					testResults[editingCmd.cmdIndex]?.command || ''
-				)}</code>
+				{#if editingCmd.cmdIndex !== null}
+					<label class="edit-modal-label">Base command</label>
+					<code class="edit-modal-base-cmd">{getBaseCommand(
+						testResults[editingCmd.cmdIndex]?.cmd ||
+						testResults[editingCmd.cmdIndex]?.command || ''
+					)}</code>
+				{/if}
 				{#if editingCmd.error}
 					<div class="edit-modal-error">{editingCmd.error}</div>
 				{/if}
@@ -726,7 +738,11 @@
 			</div>
 			<div class="edit-modal-footer">
 				<button class="edit-modal-btn edit-modal-btn-cancel" onclick={() => editingCmd = null}>Cancel</button>
-				<button class="edit-modal-btn edit-modal-btn-save" onclick={() => { const idx = editingCmd?.cmdIndex; saveEditedCommand(); if (idx != null) onRerunCommand?.(idx); }}>Run</button>
+				<button class="edit-modal-btn edit-modal-btn-save" onclick={() => {
+					const idx = editingCmd?.cmdIndex;
+					saveEditedCommand();
+					if (idx != null) onRerunCommand?.(idx);
+				}}>Run</button>
 			</div>
 		</div>
 	</div>

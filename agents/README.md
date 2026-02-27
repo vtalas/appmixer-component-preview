@@ -8,7 +8,7 @@ Two self-improving agents for generating, validating, and deploying Appmixer E2E
                     ┌─────────────────────────────────────────────┐
                     │         selfImprovingTestFlowAgent          │
                     │                                             │
-                    │  Deterministic ──▶ LLM Review ──▶ Fix      │
+                    │  Deterministic ──▶ LLM Review ──▶ Fix       │ 
                     │       ▲                              │      │
                     │       └──────────────────────────────┘      │
                     │              repeat × N iterations          │
@@ -23,7 +23,7 @@ Two self-improving agents for generating, validating, and deploying Appmixer E2E
                     ┌─────────────────────────────────────────────┐
                     │            serverFlowAgent                  │
                     │                                             │
-                    │  Upload ──▶ Validate ──▶ Start ──▶ Fix     │
+                    │  Upload ──▶ Validate ──▶ Start ──▶ Fix      │
                     │    ▲                                  │     │
                     │    └──────────────────────────────────┘     │
                     │              repeat × N iterations          │
