@@ -31,3 +31,11 @@ vite.config.ts.timestamp-*
 # Tauri
 src-tauri/target/
 src-tauri/gen/schemas/
+/agents/logs/run-1771953277517.json
+/agents/logs/run-1771956653452.json
+/agents/logs/run-1771965804293.json
+/agents/logs/run-1771966537881.json
+/agents/logs/run-1771967188362.json
+/agents/logs/run-1771967752093.json
+/agents/logs/run-1771968171719.json
+/agents/logs/run-1771975601574.json
