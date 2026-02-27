@@ -1,12 +1,13 @@
 <script>
 	import { Input } from '$lib/components/ui/input';
 	import { Badge } from '$lib/components/ui/badge';
-	import { Search, Package, X, Save, AlertCircle, FolderSync, RotateCw, Loader2, MessageSquare, ShieldAlert, ShieldCheck, Copy, Check, Settings, Columns2, ChevronRight } from 'lucide-svelte';
+	import { Search, Package, X, Save, AlertCircle, FolderSync, RotateCw, Loader2, MessageSquare, ShieldAlert, ShieldCheck, Copy, Check, Settings, Columns2, ChevronRight, BarChart3 } from 'lucide-svelte';
 	import { Button } from '$lib/components/ui/button';
 	import ComponentPreview from '$lib/components/ComponentPreview.svelte';
 	import AiChatPanel from '$lib/components/AiChatPanel.svelte';
 	import ConnectorDashboard from '$lib/components/ConnectorDashboard.svelte';
 	import SettingsPanel from '$lib/components/SettingsPanel.svelte';
+	import StatisticsPanel from '$lib/components/StatisticsPanel.svelte';
 
 	import { browser } from '$app/environment';
 	import { onMount, untrack } from 'svelte';
@@ -17,6 +18,7 @@
 	let selectedDashboardConnector = $state(null);
 	let initialE2ETab = $state(null);
 	let showSettings = $state(false);
+	let showStatistics = $state(false);
 	let showAiPanel = $state(false);
 	let secondComponent = $state(null);
 	let showComponentPicker = $state(false);
@@ -37,9 +39,38 @@
 	let authCopied = $state(false);
 	let authCheckingConnector = null; // non-reactive guard
 
+	// Folder history
+	const FOLDER_HISTORY_KEY = 'appmixer-folder-history';
+
+	function getFolderHistory() {
+		try {
+			const raw = localStorage.getItem(FOLDER_HISTORY_KEY);
+			return raw ? JSON.parse(raw) : [];
+		} catch { return []; }
+	}
+
+	function addToFolderHistory(path) {
+		if (!path) return;
+		let history = getFolderHistory();
+		history = history.filter(p => p !== path);
+		history.unshift(path);
+		if (history.length > 10) history = history.slice(0, 10);
+		try { localStorage.setItem(FOLDER_HISTORY_KEY, JSON.stringify(history)); } catch {}
+		folderHistory = history;
+	}
+
+	let folderHistory = $state([]);
+
 	// Auto-restore last folder on mount
 	onMount(() => {
+		folderHistory = getFolderHistory();
 		fileSync.restoreLastFolder();
+	});
+
+	// Track folder changes and add to history
+	$effect(() => {
+		const path = fileSync.state.directoryPath;
+		if (path) addToFolderHistory(path);
 	});
 
 	// Use the file sync store's tree instead of static data
@@ -871,20 +902,40 @@
 					</Button>
 				{/if}
 				<Button
+					variant={showStatistics ? 'secondary' : 'outline'}
+					size="sm"
+					onclick={() => { showStatistics = !showStatistics; showSettings = false; if (showStatistics) { selectedComponent = null; selectedDashboardConnector = null; updateUrl(null); } }}
+					title="Statistics"
+				>
+					<BarChart3 class="h-4 w-4" />
+				</Button>
+				<Button
 					variant={showSettings ? 'secondary' : 'outline'}
 					size="sm"
-					onclick={() => { showSettings = !showSettings; if (showSettings) { selectedComponent = null; selectedDashboardConnector = null; updateUrl(null); } }}
+					onclick={() => { showSettings = !showSettings; showStatistics = false; if (showSettings) { selectedComponent = null; selectedDashboardConnector = null; updateUrl(null); } }}
 					title="Settings"
 				>
 					<Settings class="h-4 w-4" />
 				</Button>
 			</div>
 			<div class="file-toolbar-right">
-				{#if fileSync.state.directoryName}
-					<span class="file-name">
-						<FolderSync class="h-3 w-3 inline mr-1" />
-						{fileSync.state.directoryName}/
-					</span>
+				{#if fileSync.state.directoryPath}
+					{#if folderHistory.length > 1}
+						<select
+							class="folder-history-select"
+							value={fileSync.state.directoryPath}
+							onchange={(e) => { if (e.target.value !== fileSync.state.directoryPath) fileSync.openConnectorsFolder(e.target.value); }}
+						>
+							{#each folderHistory as folderPath}
+								<option value={folderPath}>{folderPath}</option>
+							{/each}
+						</select>
+					{:else}
+						<span class="file-name">
+							<FolderSync class="h-3 w-3 inline mr-1" />
+							{fileSync.state.directoryPath}
+						</span>
+					{/if}
 					{#if fileSync.state.hasUnsavedChanges}
 						<Badge variant="secondary" class="unsaved-badge">
 							{fileSync.state.modifiedComponents.size} modified
@@ -992,7 +1043,9 @@
 			</nav>
 		{/if}
 
-		{#if showSettings}
+		{#if showStatistics}
+			<StatisticsPanel onBack={() => showStatistics = false} directoryPath={fileSync.state.directoryPath} />
+		{:else if showSettings}
 			<SettingsPanel onBack={() => showSettings = false} />
 		{:else if selectedDashboardConnector}
 			<ConnectorDashboard
@@ -1295,6 +1348,30 @@
 	.file-name {
 		font-weight: 500;
 		font-family: monospace;
+	}
+
+	
+	.folder-history-select {
+		font-family: monospace;
+		font-size: 12px;
+		font-weight: 500;
+		padding: 2px 8px;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
+		background: var(--color-background);
+		color: var(--color-foreground);
+		cursor: pointer;
+		max-width: 500px;
+		appearance: auto;
+	}
+
+	.folder-history-select:hover {
+		border-color: var(--color-ring);
+	}
+
+	.folder-history-select:focus {
+		outline: none;
+		border-color: var(--color-ring);
 	}
 
 	.file-name.muted {
