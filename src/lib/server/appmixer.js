@@ -11,11 +11,12 @@ import * as storeApi from '../../../appmixerApi/store.js';
 import {
     getE2EResultStoreIds,
     cleanFlowForComparison,
+    stableStringify,
     extractConnectorFromFlowName
 } from '../../../appmixerApi/helpers.js';
 
 // Re-export helpers
-export { getE2EResultStoreIds, cleanFlowForComparison, extractConnectorFromFlowName };
+export { getE2EResultStoreIds, cleanFlowForComparison, stableStringify, extractConnectorFromFlowName };
 
 // ---------------------------------------------------------------------------
 // Config

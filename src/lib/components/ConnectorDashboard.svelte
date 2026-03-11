@@ -26,7 +26,7 @@
 		onRefreshTree,
 		onOpenSettings,
 		initialE2ETab = null,
-		onE2ETabChange
+		onE2ETabChange // kept for URL routing compatibility
 	} = $props();
 
 	let showTestPlan = $state(false);
@@ -347,9 +347,7 @@ When creating PRs or issues, relate them to the ${connector.name} connector work
 		{#if showE2EFlows}
 			<E2EFlowsPanel
 				connectorName={connector.name}
-				initialTab={initialE2ETab}
 				onBack={() => { showE2EFlows = false; onE2ETabChange?.(null); }}
-				onTabChange={(tab) => onE2ETabChange?.(tab)}
 				{onOpenSettings}
 			/>
 		{:else if showTestPlan && testPlanData && testPlanConnector}

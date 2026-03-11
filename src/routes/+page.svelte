@@ -644,6 +644,11 @@
 			}
 			authInfo = info;
 
+			// Pre-populate scopes from component.json files and auth.js
+			if (info.scopes?.length && !authFormData.scope) {
+				authFormData.scope = info.scopes.join(',');
+			}
+
 			// Validate auth
 			const validateResponse = await fetch('/api/auth', {
 				method: 'POST',

@@ -28,6 +28,60 @@ function findFile(dirPath, fileName, depth = 0, maxDepth = 4) {
     return null;
 }
 
+/**
+ * Collect all unique scopes from component.json files in a connector directory and from auth.js.
+ */
+function collectScopes(connectorPath, authJsContent) {
+    const scopes = new Set();
+
+    // Extract scopes from auth.js (e.g. scope: ['read', 'write'] or scope: 'read write')
+    if (authJsContent) {
+        // Match scope arrays: scope: ['a', 'b'] or scope: ["a", "b"]
+        const arrayMatch = authJsContent.match(/scope\s*:\s*\[([^\]]*)\]/);
+        if (arrayMatch) {
+            const items = arrayMatch[1].match(/['"]([^'"]+)['"]/g);
+            if (items) {
+                for (const item of items) {
+                    scopes.add(item.replace(/['"]/g, ''));
+                }
+            }
+        }
+        // Match scope string: scope: 'read write'
+        const strMatch = authJsContent.match(/scope\s*:\s*['"]([^'"]+)['"]/);
+        if (strMatch) {
+            for (const s of strMatch[1].split(/[\s,]+/)) {
+                if (s) scopes.add(s);
+            }
+        }
+    }
+
+    // Scan all component.json files for auth.scope arrays
+    function scanDir(dirPath, depth = 0) {
+        if (depth > 4) return;
+        const SKIP = new Set(['node_modules', '.git', '.github', 'artifacts', 'dist', 'build']);
+        try {
+            const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+            for (const entry of entries) {
+                if (entry.isDirectory() && !entry.name.startsWith('.') && !SKIP.has(entry.name)) {
+                    scanDir(path.join(dirPath, entry.name), depth + 1);
+                } else if (entry.name === 'component.json') {
+                    try {
+                        const comp = JSON.parse(fs.readFileSync(path.join(dirPath, entry.name), 'utf-8'));
+                        if (Array.isArray(comp.auth?.scope)) {
+                            for (const s of comp.auth.scope) {
+                                if (typeof s === 'string' && s) scopes.add(s);
+                            }
+                        }
+                    } catch { /* skip invalid json */ }
+                }
+            }
+        } catch { /* skip unreadable dirs */ }
+    }
+
+    scanDir(connectorPath);
+    return [...scopes].sort();
+}
+
 /** GET /api/auth?connector=name — get auth info */
 export const GET = async ({ url }) => {
     const connector = url.searchParams.get('connector');
@@ -51,7 +105,8 @@ export const GET = async ({ url }) => {
         const content = fs.readFileSync(authJsPath, 'utf-8');
         const typeMatch = content.match(/type:\s*['"](\w+)['"]/);
         const authType = typeMatch ? typeMatch[1] : null;
-        return json({ found: true, authType, fullPath: authJsPath });
+        const scopes = collectScopes(connectorPath, content);
+        return json({ found: true, authType, fullPath: authJsPath, scopes });
     } catch {
         return json({ found: false, authType: null, fullPath: null });
     }

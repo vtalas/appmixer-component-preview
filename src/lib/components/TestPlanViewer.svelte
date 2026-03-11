@@ -348,20 +348,62 @@
         editingCmd = null;
     }
 
+    /**
+     * Re-resolve the component path in a stored command to use the current connectorsDir.
+     */
+    function resolveCommandPath(cmd) {
+        const match = cmd.match(/^(appmixer\s+test\s+component\s+)("?)(.+?)\2(\s+-|$)/);
+        if (!match) return cmd;
+
+        const prefix = match[1];
+        const oldPath = match[3];
+        const rest = cmd.slice(match[0].length - (match[4] || '').length);
+
+        const srcIdx = oldPath.indexOf('src/appmixer/');
+        let relPath;
+        if (srcIdx >= 0) {
+            relPath = oldPath.slice(srcIdx);
+        } else {
+            const parts = oldPath.replace(/\\/g, '/').split('/');
+            const compIdx = parts.lastIndexOf('component.json');
+            if (compIdx >= 0) {
+                relPath = parts.slice(Math.max(0, compIdx - 3), compIdx + 1).join('/');
+            }
+        }
+
+        if (!relPath) return cmd;
+
+        let newPath;
+        if (connectorsDir.endsWith('src/appmixer') || connectorsDir.endsWith('src/appmixer/')) {
+            const after = relPath.replace(/^src\/appmixer\//, '');
+            newPath = `${connectorsDir}/${after}`.replace(/\/\//g, '/');
+        } else {
+            newPath = `${connectorsDir}/${relPath}`.replace(/\/\//g, '/');
+        }
+
+        return `${prefix}"${newPath}"${rest}`;
+    }
+
     async function rerunCommand(item, cmdIndex) {
         const srcCmd = item.result?.commands?.[cmdIndex];
         if (!srcCmd) return;
 
-        const fullCmd = srcCmd.cmd || srcCmd.command || '';
-        if (!fullCmd) return;
+        const origCmd = srcCmd.cmd || srcCmd.command || '';
+        if (!origCmd) return;
+
+        // Resolve the path to use current connectorsDir
+        const fullCmd = connectorsDir ? resolveCommandPath(origCmd) : origCmd;
 
         runningTests = new Set([...runningTests, item.name]);
         const startTime = Date.now();
 
+        // Build updated cmd/command fields with resolved path
+        const resolvedCmd = srcCmd.cmd && connectorsDir ? resolveCommandPath(srcCmd.cmd) : srcCmd.cmd;
+
         // Create a new "running" command entry and append it to the plan immediately
         const newCommand = {
             exitCode: null,
-            cmd: srcCmd.cmd,
+            cmd: resolvedCmd,
             command: srcCmd.command,
             stdout: '',
             stderr: '',

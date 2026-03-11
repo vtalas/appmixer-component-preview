@@ -246,20 +246,70 @@
 
 	// ── Re-run command ──────────────────────────────────────────────────
 
+	/**
+	 * Re-resolve the component path in a stored command to use the current connectorsDir.
+	 * Stored commands may have paths from a different machine or relative src/appmixer/... paths.
+	 */
+	function resolveCommandPath(cmd) {
+		// Extract the path after "appmixer test component "
+		const match = cmd.match(/^(appmixer\s+test\s+component\s+)("?)(.+?)\2(\s+-|$)/);
+		if (!match) return cmd;
+
+		const prefix = match[1];
+		const oldPath = match[3];
+		const rest = cmd.slice(match[0].length - (match[4] || '').length);
+
+		// Find the src/appmixer/... portion in the old path
+		const srcIdx = oldPath.indexOf('src/appmixer/');
+		let relPath;
+		if (srcIdx >= 0) {
+			relPath = oldPath.slice(srcIdx);
+		} else {
+			// Try to extract connector/module/component from the path
+			const parts = oldPath.replace(/\\/g, '/').split('/');
+			// Look for the component.json parent structure
+			const compIdx = parts.lastIndexOf('component.json');
+			if (compIdx >= 0) {
+				// Take the last 4 segments: connector/module/component/component.json
+				relPath = parts.slice(Math.max(0, compIdx - 3), compIdx + 1).join('/');
+			}
+		}
+
+		if (!relPath) return cmd;
+
+		// Strip src/appmixer/ prefix if connectorsDir already points to src/appmixer level
+		let newPath;
+		if (connectorsDir.endsWith('src/appmixer') || connectorsDir.endsWith('src/appmixer/')) {
+			const after = relPath.replace(/^src\/appmixer\//, '');
+			newPath = `${connectorsDir}/${after}`.replace(/\/\//g, '/');
+		} else {
+			newPath = `${connectorsDir}/${relPath}`.replace(/\/\//g, '/');
+		}
+
+		return `${prefix}"${newPath}"${rest}`;
+	}
+
 	async function rerunCommand(cmdIndex) {
 		const srcCmd = testResults[cmdIndex];
 		if (!srcCmd) return;
 
-		const fullCmd = srcCmd.cmd || srcCmd.command || '';
-		if (!fullCmd) return;
+		const origCmd = srcCmd.cmd || srcCmd.command || '';
+		if (!origCmd) return;
+
+		// Resolve the path to use current connectorsDir
+		const fullCmd = connectorsDir ? resolveCommandPath(origCmd) : origCmd;
 
 		const startTime = Date.now();
+
+		// Build updated cmd/command fields with resolved path
+		const resolvedCmd = srcCmd.cmd && connectorsDir ? resolveCommandPath(srcCmd.cmd) : srcCmd.cmd;
+		const relPath = componentPath.replace(/^.*?(src\/appmixer\/)/, 'src/appmixer/');
 
 		// Create a new "running" command entry and append it immediately
 		const newCommand = {
 			exitCode: null,
-			cmd: srcCmd.cmd,
-			command: srcCmd.command,
+			cmd: resolvedCmd,
+			command: `appmixer test component ${relPath}`,
 			stdout: '',
 			stderr: '',
 			duration: null

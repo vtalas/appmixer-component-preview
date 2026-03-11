@@ -1,5 +1,5 @@
 import { json, error } from '@sveltejs/kit';
-import { fetchFlowById, cleanFlowForComparison } from '$lib/server/appmixer.js';
+import { fetchFlowById, cleanFlowForComparison, stableStringify } from '$lib/server/appmixer.js';
 import { buildFlowNameToGitHubMap } from '$lib/server/github.js';
 
 export async function POST({ request }) {
@@ -16,7 +16,7 @@ export async function POST({ request }) {
         if (!ghInfo) return error(404, 'Flow not found in GitHub repository');
 
         return json({
-            server: JSON.stringify(cleanFlowForComparison(fullFlow), null, 2),
+            server: stableStringify(cleanFlowForComparison(fullFlow)),
             github: JSON.stringify(ghInfo.content, null, 2),
             githubPath: ghInfo.path
         });

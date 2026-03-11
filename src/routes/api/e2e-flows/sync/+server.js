@@ -1,5 +1,5 @@
 import { json, error } from '@sveltejs/kit';
-import { fetchFlowById, cleanFlowForComparison } from '$lib/server/appmixer.js';
+import { fetchFlowById, cleanFlowForComparison, stableStringify } from '$lib/server/appmixer.js';
 import {
     getGitHubConfig,
     createBranch,
@@ -31,7 +31,7 @@ export async function POST({ request }) {
                 const fullFlow = await fetchFlowById(flowInfo.flowId);
                 const cleaned = cleanFlowForComparison(fullFlow);
                 const filePath = flowInfo.githubPath || generateFlowPath(flowInfo.connector || 'unknown', flowInfo.name);
-                const content = JSON.stringify(cleaned, null, 4);
+                const content = stableStringify(cleaned);
                 await createOrUpdateFile(filePath, content, `Sync E2E flow: ${flowInfo.name}`, branchName);
                 results.push({ flowId: flowInfo.flowId, name: flowInfo.name, path: filePath, success: true });
             } catch (e) {

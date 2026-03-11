@@ -1,6 +1,6 @@
 import { json, error } from '@sveltejs/kit';
 import { getConnectorsDir } from '$lib/server/state.js';
-import { fetchFlowById, cleanFlowForComparison } from '$lib/server/appmixer.js';
+import { fetchFlowById, cleanFlowForComparison, stableStringify } from '$lib/server/appmixer.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -16,7 +16,7 @@ export async function POST({ request }) {
 
         const fullFlow = await fetchFlowById(flowId);
         const cleaned = cleanFlowForComparison(fullFlow);
-        const content = JSON.stringify(cleaned, null, 4);
+        const content = stableStringify(cleaned);
 
         const safeName = flowName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
         const fileName = `test-flow-${safeName}.json`;

@@ -1,5 +1,5 @@
 import { json, error } from '@sveltejs/kit';
-import { fetchE2EFlows, fetchFlowById, cleanFlowForComparison } from '$lib/server/appmixer.js';
+import { fetchE2EFlows, fetchFlowById, cleanFlowForComparison, stableStringify } from '$lib/server/appmixer.js';
 import { buildFlowNameToGitHubMap } from '$lib/server/github.js';
 import crypto from 'crypto';
 
@@ -46,7 +46,7 @@ export async function POST({ request }) {
                     result.githubUrl = ghInfo.url || null;
                     result.githubPath = ghInfo.path || null;
                     try {
-                        const ghHash = getHash(JSON.stringify(ghInfo.content, null, 4));
+                        const ghHash = getHash(stableStringify(ghInfo.content));
                         result.githubSyncStatus = lf.localHash === ghHash ? 'match' : 'modified';
                     } catch {
                         result.githubSyncStatus = 'error';
@@ -62,7 +62,7 @@ export async function POST({ request }) {
                     result.appmixerStage = appmixerFlow.stage || 'stopped';
                     try {
                         const fullFlow = await fetchFlowById(appmixerFlow.flowId);
-                        const serverHash = getHash(JSON.stringify(cleanFlowForComparison(fullFlow), null, 4));
+                        const serverHash = getHash(stableStringify(cleanFlowForComparison(fullFlow)));
                         result.appmixerSyncStatus = lf.localHash === serverHash ? 'match' : 'modified';
                     } catch {
                         result.appmixerSyncStatus = 'error';

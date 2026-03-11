@@ -1,6 +1,6 @@
 import { json, error } from '@sveltejs/kit';
 import { getConnectorsDir } from '$lib/server/state.js';
-import { cleanFlowForComparison } from '$lib/server/appmixer.js';
+import { cleanFlowForComparison, stableStringify } from '$lib/server/appmixer.js';
 import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
@@ -91,7 +91,7 @@ export async function GET({ url }) {
                     if (seenNames.has(name)) continue;
                     seenNames.add(name);
                     const cleaned = cleanFlowForComparison(parsed);
-                    const localHash = getHash(JSON.stringify(cleaned, null, 4));
+                    const localHash = getHash(stableStringify(cleaned));
                     // Store the path relative to connectorsDir
                     const relativePath = path.relative(connectorsDir, filePath);
                     const gitStatus = getGitStatus(filePath, repoRoot);

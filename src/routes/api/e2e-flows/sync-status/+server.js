@@ -1,5 +1,5 @@
 import { json, error } from '@sveltejs/kit';
-import { fetchFlowById, cleanFlowForComparison } from '$lib/server/appmixer.js';
+import { fetchFlowById, cleanFlowForComparison, stableStringify } from '$lib/server/appmixer.js';
 import { buildFlowNameToGitHubMap } from '$lib/server/github.js';
 import { getConnectorsDir } from '$lib/server/state.js';
 import crypto from 'crypto';
@@ -12,8 +12,8 @@ function getHash(content) {
 
 function compareFlows(serverFlow, githubFlow) {
     if (!githubFlow) return 'server_only';
-    const serverHash = getHash(JSON.stringify(cleanFlowForComparison(serverFlow), null, 4));
-    const githubHash = getHash(JSON.stringify(githubFlow, null, 4));
+    const serverHash = getHash(stableStringify(cleanFlowForComparison(serverFlow)));
+    const githubHash = getHash(stableStringify(githubFlow));
     return serverHash === githubHash ? 'match' : 'modified';
 }
 
@@ -57,7 +57,7 @@ function buildLocalFlowMap(connectorsDir) {
                     if (!parsed.flow || !parsed.name) continue;
                     if (localMap.has(parsed.name)) continue; // deduplicate
                     const cleaned = cleanFlowForComparison(parsed);
-                    const localHash = getHash(JSON.stringify(cleaned, null, 4));
+                    const localHash = getHash(stableStringify(cleaned));
                     localMap.set(parsed.name, {
                         localPath: path.relative(connectorsDir, filePath),
                         localHash
@@ -97,7 +97,7 @@ export async function POST({ request }) {
                         // Need to fetch the full flow to compare with local
                         try {
                             const fullFlow = await fetchFlowById(flow.flowId);
-                            const serverHash = getHash(JSON.stringify(cleanFlowForComparison(fullFlow), null, 4));
+                            const serverHash = getHash(stableStringify(cleanFlowForComparison(fullFlow)));
                             localSyncStatus = serverHash === localInfo.localHash ? 'match' : 'modified';
                         } catch {
                             localSyncStatus = 'error';
@@ -114,7 +114,7 @@ export async function POST({ request }) {
                 }
                 try {
                     const fullFlow = await fetchFlowById(flow.flowId);
-                    const serverHash = getHash(JSON.stringify(cleanFlowForComparison(fullFlow), null, 4));
+                    const serverHash = getHash(stableStringify(cleanFlowForComparison(fullFlow)));
 
                     let localSyncStatus = null;
                     let localPath = null;
